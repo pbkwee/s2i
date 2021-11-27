@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Copyright Rimuhosting.com
+# https://rimuhosting.com
 
 function usage {
   echo " 

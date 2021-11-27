@@ -1,4 +1,8 @@
 #!/bin/bash
+#
+# Copyright Rimuhosting.com
+# https://rimuhosting.com
+
 function usage {
   echo " 
   $0 Creates a backup of a Linux server.  Runs a database backup.  Then creates an image from the server.  Then copies that to a backup host

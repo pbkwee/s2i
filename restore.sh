@@ -1,4 +1,7 @@
 #!/bin/bash
+#
+# Copyright Rimuhosting.com
+# https://rimuhosting.com
 
 #change these to your IP.  old = original host's IP.  new = the IP on the server we are restoring to
 oldip=127.0.0.3
