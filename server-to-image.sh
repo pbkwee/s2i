@@ -1,4 +1,5 @@
 #!/bin/bash
+
 #
 # Copyright Rimuhosting.com
 # https://rimuhosting.com
@@ -16,11 +17,24 @@ function usage {
     --outputfile output file [ backup-$dt ]
     --outputextn output file extension [ gz | zip | gz.enc depending on encryption ]
     --outputpath output file full path (overrides other output options)
-    --password by default we will create a password for you.  And use the same password each time the same outputdir is used.
+    --password by default we will create a password for you.  And use the same password each time the same outputdir is used.  NA if encrypt==none.
+  
+  Put files/directories you wish to exclude in $(dirname $outputpath)/exclude.log
   
   We recommend you stop database servers and other processes that may be updating files while you run this script.
   
   If you use the --http option we will put the file on a URL that should be secret.  However we still recommend you use one of the --encrypt options.
+  
+  Sample usage using pipes, which will save using space for the backup on the server being backed up:
+  backupserver: 
+  mkdir bu
+  mkfifo bu/fifo
+  echo "/dont/backup/this/dir" > bu/exclude.log
+  bash ./s2i --outputpath bu/fifo
+  
+  While this is running, go to the destination server:
+  restore server:
+  ssh backupserver cat bu/fifo > backupserver.gz
   "
   return 0
 }
@@ -157,20 +171,20 @@ fi
 #cd "$(dirname $outputpath)"
 
 # exclude mysql and log files, but keep directory structure
-[ -d /var/log ] && find /var/log -type f > $(dirname $outputpath)/excludefiles.log
-[ -d /var/cache/apt/archives ] && find  /var/cache/apt/archives -type f >> $(dirname $outputpath)/excludefiles.log
-touch $(dirname $outputpath)/excludefiles2.log
+[ -d /var/log ] && find /var/log -type f | egrep -v 'mysql|mariadb' > $(dirname $outputpath)/exclude-default.log
+[ -d /var/cache/apt/archives ] && find  /var/cache/apt/archives -type f >> $(dirname $outputpath)/exclude-default.log
+touch $(dirname $outputpath)/exclude.log
 
-#find /var/lib/mysql -type f > "$(dirname $outputpath)/excludefiles.log"
+#find /var/lib/mysql -type f > "$(dirname $outputpath)/exclude-default.log"
 # exclude sockets
-find / -type s -print 2>/dev/null >> "$(dirname $outputpath)/excludefiles.log"
+find $([ -d /tmp ] && echo /tmp)  $([ -d /var ] && echo /var ) $([ -d /run ] && echo /run) $([ -d /blerk ] && echo /blerk) -type s,p  -print 2>/dev/null >> "$(dirname $outputpath)/exclude-default.log"
 
 # create a tar file, exclude certain directories
 # encrypt the data using openssh with the provided password
 
 taropts="--numeric-owner --create --preserve-permissions --gzip --file - 
---exclude-from=$(dirname $outputpath)/excludefiles.log
---exclude-from=$(dirname $outputpath)/excludefiles2.log
+--exclude-from=$(dirname $outputpath)/exclude.log
+--exclude-from=$(dirname $outputpath)/exclude-default.log
 --exclude=$(dirname $outputpath)
 --exclude=/root/backup.* 
 --exclude=/restore* 
