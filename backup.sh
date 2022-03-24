@@ -9,6 +9,7 @@ function usage {
   
   Usage: $0
     --databases mysql database names to backup.  defaults to none.  If .mysqlp is present it will be used for the pasword
+    --all-databases backs up all user mysql databases
     --outputpath where to place the backup image [ defaults to s2i/s2i.gz ]
     --remotehost IP address or hostname of host where you wish to copy the backup image
   
@@ -28,34 +29,41 @@ function parse() {
         [ "." == "$(dirname $1)" ] && echo "Need a full path and filename for outputpath" >&2 && return 1
         outputpath="$1"
         ;;
-        --remotehost)
-          shift
-          if [ -z "$1" ]; then
-            echo "Missing --remotehost argument" >&2
-            usage
-            return 1
-          fi
-          remotehost="$1"
+      --all-databases)
+        databases="$(mysql $([ -f .mysqlp ] && echo "--password $(cat .mysqlp)") -e 'show databases' | cat | egrep -v 'Database|^mysql$|information_schema|performance_schema')"
+        [ -z "$databases" ] && echo "Unable to get a list of the databases.  If a password is necessary you may put it in a file .mysqlp " >&2 && return 1
         ;;
-        --databases)
-          shift
-          if [ -z "$1" ]; then
-            echo "Missing --databases argument" >&2
-            usage
-            return 1
-          fi
-          databases="$1"
+      --mysqldump)
+        MYSQLDUMP="x"
         ;;
-        -? | --help)
+      --remotehost)
+        shift
+        if [ -z "$1" ]; then
+          echo "Missing --remotehost argument" >&2
           usage
           return 1
-        ;;
-        *)
-          echo "Unrecognized parameter '$1'" >&2
+        fi
+        remotehost="$1"
+      ;;
+      --databases)
+        shift
+        if [ -z "$1" ]; then
+          echo "Missing --databases argument" >&2
           usage
-          return 1;
-        ;;
-      esac
+          return 1
+        fi
+        databases="$1"
+      ;;
+      -? | --help)
+        usage
+        return 1
+      ;;
+      *)
+        echo "Unrecognized parameter '$1'" >&2
+        usage
+        return 1;
+      ;;
+    esac
     shift
   done
 }
@@ -64,8 +72,8 @@ function parse() {
 parse $*
 [ $? -ne 0 ] && exit 1
 
-apt-get -y install mydumper
-apt-get -y install percona-toolkit
+dpkg -l | grep -qai mydumper || apt-get -y install mydumper
+dpkg -l | grep -qai percona-toolkit || apt-get -y install percona-toolkit
 
 [ ! -f .backup.private.key ] && ssh-keygen -f .backup.private.key -t rsa -C "backupkey" -N "" 
 if [ ! -z "$remotehost" ] && [ ! -z "$SSH_AUTH_SOCK" ]; then
@@ -78,18 +86,25 @@ ret=0
 if [ ! -z "$databases" ]; then
   echo "Backing up databases: $databases"
   [ ! -d mysqlbackup ] && mkdir mysqlbackup
-  [ ! -f .mysqlp ] && echo "No .mysqlp, no setting a password parameter."
+  [ ! -f .mysqlp ] && echo "No .mysqlp, not setting a password parameter."
   [ -f .mysqlp ] && echo "Using the contents of .mysqlp for the mysql password."
   pt-show-grants $([ -f .mysqlp ] && echo "-p$(cat .mysqlp)") > mysqlbackup/grants.sql
   [ $? -ne 0 ] && ret=1
   for db in $databases; do
-    mydumper $([ -f .mysqlp ] && echo "--password $(cat .mysqlp)") --outputdir mysqlbackup --compress --routines --triggers --events --complete-insert --tz-utc $( [ ! -z "$db" ] && echo " --database $db" )  
-    [ $? -ne 0 ] && ret=1
+    if [ -z "$MYSQLDUMP" ] ; then
+      mydumper $([ -f .mysqlp ] && echo "--password $(cat .mysqlp)") --outputdir mysqlbackup --compress --routines --triggers --events --complete-insert --tz-utc $( [ ! -z "$db" ] && echo " --database $db" )
+      [ $? -ne 0 ] && ret=1
+    else 
+      mysqldump $([ -f .mysqlp ] && echo "--password=$(cat .mysqlp)") --routines --triggers --events --complete-insert --tz-utc $db | gzip > mysqlbackup/"${db}".sql.gz
+      [ $? -ne 0 ] && ret=1
+    fi
   done
+  [ $ret -ne 0 ] && exit 1
 fi
 
 echo "Creating a backup archive file."
-bash server-to-image.sh --outputpath "$outputpath"
+# $- lists the set options.  e.g. echo $-=>himBH .  If we are -x keep on being -x
+bash $( [ ! -z "${-//[^x]/}" ] && echo "-x") server-to-image.sh --outputpath "$outputpath"
 [ $? -ne 0 ] && ret=1
 
 [ -z "$remotehost" ] && echo "No --remotehost provided.  Skipping copying backup to any remote host."
