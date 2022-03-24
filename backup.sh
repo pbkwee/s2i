@@ -68,7 +68,7 @@ apt-get -y install mydumper
 apt-get -y install percona-toolkit
 
 [ ! -f .backup.private.key ] && ssh-keygen -f .backup.private.key -t rsa -C "backupkey" -N "" 
-if [ ! -z "$remotehost" ] && [ ! -z "$SSH_AUTH_SOCK" -a -x "$SSHAGENT" ]; then
+if [ ! -z "$remotehost" ] && [ ! -z "$SSH_AUTH_SOCK" ]; then
   [ -f .backup.private.key.pub ] && scp .backup.private.* $remotehost: && ssh $remotehost 'mkdir -p .ssh; [ ! -f .ssh/authorized_keys ] && touch .ssh/authorized_keys; ! grep --fixed-strings "$(cat .backup.private.key.pub)" .ssh/authorized_keys && cat .backup.private.key.pub >> .ssh/authorized_keys'    
 fi
 
