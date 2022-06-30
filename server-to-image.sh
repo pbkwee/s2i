@@ -25,16 +25,21 @@ function usage {
   
   If you use the --http option we will put the file on a URL that should be secret.  However we still recommend you use one of the --encrypt options.
   
-  Sample usage using pipes, which will save using space for the backup on the server being backed up:
-  backupserver: 
+  There is a backup.sh script that will let you run mysql database backups, prior to running server-to-image.sh
+  
+  You can use Unix pipes to create a backup on a remote server without using much space for the backup on the source server.
+  
+  Sample usage using pipes.  On the server being backed up:
   mkdir bu
   mkfifo bu/fifo
   echo "/dont/backup/this/dir" > bu/exclude.log
-  bash ./s2i --outputpath bu/fifo
+  bash ./server-to-image.sh --outputpath bu/fifo
   
   While this is running, go to the destination server:
-  restore server:
   ssh backupserver cat bu/fifo > backupserver.gz
+  
+  Then use the restore.sh script if/when you need to overwrite a server image with a backup image.
+  
   "
   return 0
 }

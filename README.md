@@ -1,4 +1,4 @@
-# s2i
+ s2i
 
 A set of scripts to help with Linux server backups and restores.
 
