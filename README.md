@@ -56,7 +56,6 @@ bash server-to-image.sh --help
  
  ```bash
  bash mysqlbackup.sh --help
- ```
  
 mysqlbackup.sh Creates a mysql backup.  Optionally copy that to a backup host
   
@@ -88,6 +87,6 @@ Tested on a few VMs.  Not tested on a physical server.  Use at your own risk.
 
 RimuHosting offers this backup/restore (+ dist upgrade) as a service.  See https://blog.rimuhosting.com/2021/07/12/distro-upgrade-as-a-service/
 
-```
+```bash
 oldip=127.0.0.2 newip=127.0.0.3 archivegz=s2i-backup.gz bash restore.sh
 ```
