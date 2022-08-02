@@ -5,29 +5,32 @@
 
 function usage {
   echo " 
-  $0 Creates a backup of a Linux server.  Runs a database backup.  Then creates an image from the server.  Then copies that to a backup host
+  $0 Creates a mysql backup.  Optionally copy that to a backup host
   
   Usage: $0
     --databases mysql database names to backup.  defaults to none.  If .mysqlp is present it will be used for the pasword
     --all-databases backs up all user mysql databases
-    --outputpath where to place the backup image [ defaults to s2i/s2i.gz ]
+    --outputdir where to place the backup image [ defaults to ./mysqldump ]
     --remotehost IP address or hostname of host where you wish to copy the backup image
   
+  Uses (or creates) an SSH key for backups at .backup.private.key
+  
+  Uses .mysqlp for a mysql password
   "
   return 0
 }
 
-outputpath=s2i/s2i.gz
+outputdir="./mysqldump-$(date +%Y-%m-%d-%s)"
 
 function parse() {
   while [ -n "$1" ]; do
     case "$1" in
-      --outputpath)
+      --outputdir)
         shift
         [ -z "$1" ] && echo "Missing output path" >&2 && return 1
-        [ -z "$(dirname $1)" ] && echo "Need a full path and filename for outputpath" >&2 && return 1
-        [ "." == "$(dirname $1)" ] && echo "Need a full path and filename for outputpath" >&2 && return 1
-        outputpath="$1"
+        [ -z "$(dirname $1)" ] && echo "Need a full path and filename for outputdir" >&2 && return 1
+        [ "." == "$(dirname $1)" ] && echo "Need a full path and filename for outputdir" >&2 && return 1
+        outputdir="$1"
         ;;
       --all-databases)
         databases="$(mysql $([ -f .mysqlp ] && echo "--password $(cat .mysqlp)") -e 'show databases' | cat | egrep -v 'Database|^mysql$|information_schema|performance_schema')"
@@ -72,8 +75,20 @@ function parse() {
 parse $*
 [ $? -ne 0 ] && exit 1
 
-dpkg -l | grep -qai mydumper || apt-get -y install mydumper
-dpkg -l | grep -qai percona-toolkit || apt-get -y install percona-toolkit
+[ -e "$outputdir" ] && [ -d "$outputdir" ] && echo "--outputdir needs to be a directory" >&2 && exit 1
+
+[ ! -e "$outputdir" ] && mkdir -p "$outputdir" 
+
+if which dpkg 2>/dev/null >/dev/null; then
+  if ! dpkg -l | grep -qai mydumper; then 
+    echo "Installing mydumper tool..."
+    apt-get -y install mydumper
+  fi
+  if ! dpkg -l | grep -qai percona-toolkit; then
+     echo "Installing percona toolkit (for grants)..."
+     apt-get -y install percona-toolkit
+  fi
+fi
 
 [ ! -f .backup.private.key ] && ssh-keygen -f .backup.private.key -t rsa -C "backupkey" -N "" 
 if [ ! -z "$remotehost" ] && [ ! -z "$SSH_AUTH_SOCK" ]; then
@@ -81,21 +96,31 @@ if [ ! -z "$remotehost" ] && [ ! -z "$SSH_AUTH_SOCK" ]; then
 fi
 
 ret=0
-[ -z "$databases" ] && echo "No --databases provided.  Skipping mysql backups."
+
+if ! which mydumper 2>/dev/null >/dev/null && [ ! -z "$MYSQLDUMP" ] ; then
+    echo "Unable to install mydumper, falling back to mysqldump." >&2
+    MYSQLDUMP="x"
+fi 
+
+[ -z "$databases" ] && echo "No --databases db1,db2 provided, no --all-databases set.  Skipping mysql backups."
+
 # creates a file per db table
 if [ ! -z "$databases" ]; then
-  echo "Backing up databases: $databases"
-  [ ! -d mysqlbackup ] && mkdir mysqlbackup
-  [ ! -f .mysqlp ] && echo "No .mysqlp, not setting a password parameter."
-  [ -f .mysqlp ] && echo "Using the contents of .mysqlp for the mysql password."
-  pt-show-grants $([ -f .mysqlp ] && echo "-p$(cat .mysqlp)") > mysqlbackup/grants.sql
-  [ $? -ne 0 ] && ret=1
+  echo "Backing up databases: $databases to $outputdir"
+  [ ! -f .mysqlp ] && echo "No .mysqlp file, not setting a password parameter."
+  [ -f .mysqlp ] && echo "Using the contents of .mysqlp file for the mysql password."
+  if which pt-show-grants 2>/dev/null >/dev/null ; then
+    echo "Saving database grants/permissions to $outputdir/grants.sql"  
+    pt-show-grants $([ -f .mysqlp ] && echo "-p$(cat .mysqlp)") > $outputdir/grants.sql
+    [ $? -ne 0 ] && ret=1
+  fi
+  echo "Backing up $databases..."
   for db in $databases; do
     if [ -z "$MYSQLDUMP" ] ; then
-      mydumper $([ -f .mysqlp ] && echo "--password $(cat .mysqlp)") --outputdir mysqlbackup --compress --routines --triggers --events --complete-insert --tz-utc $( [ ! -z "$db" ] && echo " --database $db" )
+      mydumper $([ -f .mysqlp ] && echo "--password $(cat .mysqlp)") --outputdir "$outputdir" --compress --routines --triggers --events --complete-insert --tz-utc $( [ ! -z "$db" ] && echo " --database $db" )
       [ $? -ne 0 ] && ret=1
     else 
-      mysqldump $([ -f .mysqlp ] && echo "--password=$(cat .mysqlp)") --routines --triggers --events --complete-insert --tz-utc $db | gzip > mysqlbackup/"${db}".sql.gz
+      mysqldump $([ -f .mysqlp ] && echo "--password=$(cat .mysqlp)") --routines --triggers --events --complete-insert --tz-utc $db | gzip > "$outputdir"/"${db}".sql.gz
       [ $? -ne 0 ] && ret=1
     fi
   done
@@ -104,8 +129,8 @@ fi
 
 echo "Creating a backup archive file."
 # $- lists the set options.  e.g. echo $-=>himBH .  If we are -x keep on being -x
-bash $( [ ! -z "${-//[^x]/}" ] && echo "-x") server-to-image.sh --outputpath "$outputpath"
-[ $? -ne 0 ] && ret=1
+#bash $( [ ! -z "${-//[^x]/}" ] && echo "-x") server-to-image.sh --outputpath "$outputpath"
+#[ $? -ne 0 ] && ret=1
 
 [ -z "$remotehost" ] && echo "No --remotehost provided.  Skipping copying backup to any remote host."
 if [ ! -z "$remotehost" ]; then
@@ -119,7 +144,7 @@ if [ ! -z "$remotehost" ]; then
   chmod u=rw,og=  .backup.private.key
   ssh-add -l | grep -qai backup || ssh-add .backup.private.key
   echo "Copying backup file to $remotehost"
-  scp $outputpath $remotehost:
+  scp -r $outputdir $remotehost:
   [ $? -ne 0 ] && ret=1
 fi
 
