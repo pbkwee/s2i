@@ -2,7 +2,7 @@
 
 A set of scripts to help with Linux server backups and restores.
 
-server-to-image.sh creates an archive of a Linux server.  One that can be extracted to / on another server to clone the original server.  This is handy if you wanted to take a full backup image of a server, that you may wish to restore at some point in the future.  e.g. after closing down some VM hosting, or in the event of a disaster.
+server-to-image.sh creates an archive of a Linux server.  One that can be extracted to / on another server to clone the original server.  This is handy if you wanted to take a full backup image of a server, that you may wish to restore at some point in the future.  e.g. after closing down some VM hosting, or in the event of a disaster.  For best results, stop services that may be writing to files prior to creating the archive.
 
 backup.sh performs a database backup, uses server-to-image.sh to create an archive image of the server, provides a few options around encryption (openssl, none, or zip), and has an option to make that archive accessible via http (if you prefer not to use a more secure method, like scp/sftp, to access it).
 
