@@ -30,7 +30,7 @@ function usage {
   mkdir bu
   mkfifo bu/fifo
   echo "/dont/backup/this/dir" > bu/exclude.log
-  bash ./s2i --outputpath bu/fifo
+  nohup bash ./s2i --outputpath bu/fifo
   
   While this is running, go to the destination server:
   restore server:
@@ -161,7 +161,7 @@ outputpath="${outputpath:-$outputdir/$outputfile.$outputextn}"
 
 if [ -z "$password" ]; then
   # random password of letters and digits
-  [ ! -f "$(dirname $outputpath)/.bupassword" ] && </dev/urandom tr -dc A-Z0-9 | head -c10 > "$(dirname $outputpath)/.bupassword"
+  [ ! -f "$(dirname $outputpath)/.bupassword" ] && LC_ALL=C </dev/urandom tr -dc A-Z0-9 | head -c10 > "$(dirname $outputpath)/.bupassword"
 
   password="$(cat "$(dirname $outputpath)/.bupassword")"
 else 
@@ -244,7 +244,7 @@ echo "Backup created: $(ls -lh $outputpath)" | tee -a "$(dirname $outputpath)/.b
 # record the full path of the output
 echo $outputpath > "$(dirname $outputpath)/.outputpath"
 
-secretdirname="$(</dev/urandom tr -dc A-Z0-9 | head -c10)"
+secretdirname="$(LC_ALL=C </dev/urandom tr -dc A-Z0-9 | head -c10)"
 if [ ! -z "$ishttp" ]; then
   mkdir -p "$(dirname $outputpath)/$secretdirname"
   mv $outputpath "$(dirname $outputpath)/$secretdirname/"
