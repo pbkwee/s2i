@@ -215,6 +215,8 @@ taropts="--numeric-owner --create --preserve-permissions --gzip --file -
 --exclude=/home/*/.local/share/Trash $files"
 
 ip="$(ifconfig eth0 | grep 'inet ' | sed 's/inet addr:/inet /' | awk '{print $2}')"
+# The following works on recent distros with iproute installed.
+[ -z "$ip" ] && ip="$(ip --json route get 1|awk -vRS="," '/src/'|tr -d "\""|cut -d: -f2)"
 [ -z "$ip" ] && echo "Could not determine IP address." >&2 && exit 1 
 
 echo "Starting server-to-image at $dt" | tee "$(dirname $outputpath)/.buinstructions"
