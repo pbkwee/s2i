@@ -22,7 +22,7 @@ function usage {
     --size output the size of the backup (without creating it or using any disk space)
     
   
-  Put files/directories you wish to exclude in $(dirname $outputpath)/exclude.log
+  Put files/directories you wish to exclude in $(dirname "$outputpath")/exclude.log
   
   The default backup includes binary database files (if any, e.g. for postgres and mysql).  You may prefer to exclude them, and run a database dump instead (e.g. per mysqlbackup.sh).
   
@@ -66,8 +66,7 @@ function parse() {
         shift
         if [ -z "$1" ]; then
           echo "Missing --encrypt type" >&2
-          usage
-          return 1
+          isusage="xxx"
         elif [ "$1" == "openssl" ] ; then
           encrypt="openssl"
         elif [ "$1" == "zip" ]; then
@@ -76,8 +75,7 @@ function parse() {
            encrypt="none"
         else 
           echo "Unrecognized --encrypt type '$1'" >&2
-          usage
-          return 1
+          isusage="xxx"
         fi
       ;;
       --outputdir)
@@ -105,8 +103,8 @@ function parse() {
       --outputpath)
         shift
         [ -z "$1" ] && echo "Missing output path" >&2 && return 1
-        [ -z "$(dirname $1)" ] && echo "Need a full path and filename for outputpath" >&2 && return 1
-        [ "." == "$(dirname $1)" ] && echo "Need a full path and filename for outputpath" >&2 && return 1
+        [ -z "$(dirname "$1")" ] && echo "Need a full path and filename for outputpath" >&2 && return 1
+        [ "." == "$(dirname "$1")" ] && echo "Need a full path and filename for outputpath" >&2 && return 1
         outputpath="$1"
         ;;
         --size)
@@ -116,25 +114,22 @@ function parse() {
           shift
           if [ -z "$1" ]; then
             echo "Missing --files argument" >&2
-            usage
-            return 1
+            isusage="xxx"
           fi
           files="$1"
           for i in $files; do 
-            [ ! -e $i ] && echo "No such file as $i" >&2 && return 1
+            [ ! -e "$i" ] && echo "No such file as $i" >&2 && return 1
           done
         ;;
         --http)
           ishttp="xxx"
         ;;
         -? | --help)
-          usage
-          return 1
+          isusage="xxx"
         ;;
         *)
           echo "Unrecognized parameter '$1'" >&2
-          usage
-          return 1;
+          isusage="xxx"
         ;;
       esac
     shift
@@ -166,6 +161,13 @@ elif [ "$encrypt" == "none" ]; then
 fi
 
 outputpath="${outputpath:-$outputdir/$outputfile.$outputextn}"
+
+# Now we are in a position to run usage if needed.
+if [ -n "$isusage" ] ; then
+  usage
+  exit 1
+fi
+
 # create a backup directory
 [ ! -d "$(dirname $outputpath)" ] && mkdir -p "$(dirname $outputpath)"
 
