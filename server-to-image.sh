@@ -24,6 +24,8 @@ function usage {
   
   Put files/directories you wish to exclude in $(dirname "$outputpath")/exclude.log
   
+  By default the script will exclude directories including /proc /tmp /mnt /dev /sys /run /media
+  
   The default backup includes binary database files (if any, e.g. for postgres and mysql).  You may prefer to exclude them, and run a database dump instead (e.g. per mysqlbackup.sh).
   
   You can also stop database servers and other processes that may be updating files while you run this script.
@@ -55,7 +57,7 @@ dt="$(date +%Y-%m-%d-%s)"
 # openssl, none, zip
 encrypt=""
 ishttp=""
-files=/
+filestobackup=/
 issize=""
 outputdir="${outputdir:-/root/backup.s2i}"
 outputfile="${outputfile:-backup-$dt}"
@@ -116,8 +118,8 @@ function parse() {
             echo "Missing --files argument" >&2
             isusage="xxx"
           fi
-          files="$1"
-          for i in $files; do 
+          filestobackup="$1"
+          for i in $filestobackup; do 
             [ ! -e "$i" ] && echo "No such file as $i" >&2 && return 1
           done
         ;;
@@ -148,8 +150,8 @@ fi
 
 parse "$@" || exit 1
 
-[ -z "$ishttp" ] && [ -z "$encrypt" ] && encrypt="none" && echo "Not using http, not doing backup file encryption"
-[ -n "$ishttp" ] && [ -z "$encrypt" ] && encrypt="openssl" && echo "Using http, enabling backup file openssl encryption"
+[ -z "$ishttp" ] && [ -z "$encrypt" ] && encrypt="none"
+[ -n "$ishttp" ] && [ -z "$encrypt" ] && encrypt="openssl"
 
 if [ "$encrypt" == "openssl" ]; then
   outputextn="${outputextn:-gz.enc}"
@@ -187,46 +189,62 @@ fi
 touch "$(dirname "$outputpath")/exclude.log"
 
 #find /var/lib/mysql -type f > "$(dirname "$outputpath")/exclude-default.log"
-# exclude sockets
+
+# exclude sockets and pipes
 # cannot use -type s,p => Arguments to -type should contain only one letter
 find "$([ -d /tmp ] && echo /tmp)"  "$([ -d /var ] && echo /var )" "$([ -d /run ] && echo /run)" -type s  -print 2>/dev/null >> "$(dirname "$outputpath")/exclude-default.log"
 find "$([ -d /tmp ] && echo /tmp)"  "$([ -d /var ] && echo /var )" "$([ -d /run ] && echo /run)" -type p  -print 2>/dev/null >> "$(dirname "$outputpath")/exclude-default.log"
 
+echo '/root/backup.* 
+/restore* 
+/proc 
+/tmp 
+/mnt 
+/dev 
+/sys
+/run 
+/media 
+/usr/src/linux-headers* 
+/home/*/.gvfs 
+/home/*/.cache 
+/home/*/.local/share/Trash
+' >> "$(dirname "$outputpath")/exclude-default.log"  
+
+echo "$(dirname "$outputpath")" >> "$(dirname "$outputpath")/exclude-default.log"
+
 # create a tar file, exclude certain directories
 # encrypt the data using openssh with the provided password
 
-taropts="--numeric-owner --create --preserve-permissions --gzip --file - 
+taropts=(--numeric-owner --create --preserve-permissions --gzip --file - 
 --exclude-from=$(dirname "$outputpath")/exclude.log
 --exclude-from=$(dirname "$outputpath")/exclude-default.log
---exclude=$(dirname "$outputpath")
---exclude=/root/backup.* 
---exclude=/restore* 
---exclude=/proc 
---exclude=/tmp 
---exclude=/mnt 
---exclude=/dev 
---exclude=/sys
---exclude=/run 
---exclude=/media 
---exclude=/usr/src/linux-headers* 
---exclude=/home/*/.gvfs 
---exclude=/home/*/.cache 
---exclude=/home/*/.local/share/Trash $files"
+$filestobackup
+)
 
-ip="$(ifconfig eth0 | grep 'inet ' | sed 's/inet addr:/inet /' | awk '{print $2}')"
+ip="$(ifconfig eth0 2>/dev/null| grep 'inet ' | sed 's/inet addr:/inet /' | awk '{print $2}')"
 # The following works on recent distros with iproute installed.
-[ -z "$ip" ] && ip="$(ip --json route get 1|awk -vRS="," '/src/'|tr -d "\""|cut -d: -f2)"
+[ -z "$ip" ] && ip="$(ip --json route get 1 2>/dev/null | awk -vRS="," '/src/'|tr -d "\""|cut -d: -f2)"
 [ -z "$ip" ] && echo "Could not determine IP address." >&2 && exit 1 
 
-echo "Starting server-to-image at $dt" | tee "$(dirname "$outputpath")/.buinstructions"
+echo "" | tee "$(dirname "$outputpath")/.buinstructions"
+{
+[ -z "$ishttp" ] && echo "HTTP URL: NA.  Not making backup http accessible"
+[ -n "$ishttp" ] && echo "HTTP URL: Will make backup http accessible"
+echo "Encryption set to: '$encrypt'"
+echo "IP: '$ip'"
+echo "Output path: '$outputpath'"
+
+echo "Starting server-to-image at $dt"
+} | tee -a "$(dirname "$outputpath")/.buinstructions"
+
 if [ -n "$issize" ]; then
   echo "Checking the file size of the backup..." | tee -a "$(dirname "$outputpath")/.buinstructions"
   if [ "$encrypt" == "openssl" ]; then
-    bytes="$(tar "$taropts" | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  | wc -c)"
+    bytes="$(tar ${taropts[@]} | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  | wc -c)"
   elif [ "$encrypt" == "zip" ]; then
-    bytes="$(tar "$taropts" | zip --encrypt --password "$password"  | wc -c)"
+    bytes="$(tar ${taropts[@]} | zip --encrypt --password "$password"  | wc -c)"
   elif [ "$encrypt" == "none" ]; then
-    bytes="$(tar "$taropts" | wc -c)"
+    bytes="$(tar ${taropts[@]} | wc -c)"
   else
     bytes="NA"
   fi
@@ -236,18 +254,18 @@ fi
 ret=0
 if [ "$encrypt" == "openssl" ]; then
   echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar "$taropts" | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
+  tar ${taropts[@]} | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
   [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ] && ret=1
   echo "OpenSSL command to decrypt the $outputpath backup file openssl enc -d -aes-256-cbc  -md sha256 -pass "pass:$password" -in $outputpath -out backup.tar.gz" | tee -a "$(dirname "$outputpath")/.buinstructions" 
 elif [ "$encrypt" == "zip" ]; then
   echo "Creating zip file, password encrypted (password is $password), at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar "$taropts" | zip --encrypt --password "$password"  > "$outputpath"
+  tar ${taropts[@]} | zip --encrypt --password "$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
   [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ] && ret=1
 elif [ "$encrypt" == "none" ]; then
   echo "Creating tar file, not encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar "$taropts" > "$outputpath"
+  tar ${taropts[@]} > "$outputpath"
   ret=$?
 else
   echo "Unexpected encryption type '$encrypt'" >&2
