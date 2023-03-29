@@ -8,11 +8,87 @@ oldip="${oldip:-127.0.0.3}"
 newip="${newip:-127.0.0.4}"
 
 # gzip file we'll be restoring from
+[ -z "$archivegz" ] && [ "1" == "$(find . -maxdepth 1 -type f -size +100000 | grep '\.gz' | wc -l)" ] && archivegz="$(find . -maxdepth 1 -type f -size +100000 | grep '\.gz')"
 archivegz="${archivegz:-/root/s2i.gz}"
 archivegz="$(realpath "$archivegz")"
 
 # location we will be restoring to, typically /
 restoretopath="${restoretopath:-/}"
+restorescratchdir="$(compgen -G "/root/restore.*" >/dev/null && find /root/restore.* -maxdepth 0 -mtime -10 -type d  | head)"
+
+function usage() {
+echo "$0 usage:
+  [ --oldip originalip ] [--newip newip ] set if you want to search/replace these IP values on the restored image
+  [ --archivegz path ] defaults to the only and only big gz file in the current directory
+  [ --restoretopath path ] defaults to the /
+  
+  Will extract the tar.gz archivegz to the restoretopath /
+  "
+}
+function info() {
+  echo "Info:"
+  echo "Archive gz: $archivegz"
+  ls -lh "$archivegz"
+  echo "Restore path: $restoretopath"
+  echo "Old IP: $oldip"
+  echo "New IP: $newip"
+  echo "Restore scratch dir: $restorescratchdir"
+}
+
+function parse() {
+  while [ -n "$1" ]; do
+    case "$1" in
+      --oldip)
+        shift
+        if [ -z "$1" ]; then
+          echo "Missing --oldip value" >&2
+          return 1
+        fi
+        oldip="$1"
+        ;;
+      --newip)
+        shift
+        if [ -z "$1" ]; then
+          echo "Missing --newip value" >&2
+          return 1
+        fi
+        newip="$1"
+        ;;
+      --archivegz)
+        shift
+        if [ -z "$1" ]; then
+          echo "Missing --archivegz value" >&2
+          usage
+          return 1
+        fi
+        archivegz="$1"
+        ;;
+      --restoretopath)
+        shift
+        if [ -z "$1" ]; then
+          echo "Missing --restoretopath value" >&2
+          usage
+          return 1
+        fi
+        restoretopath="$1"
+        ;;
+      --help)
+        usage
+        return 1
+        ;;
+      *)
+        echo "Unrecognized parameter '$1'" >&2
+        usage
+        return 1;
+        ;;
+      esac
+    shift
+  done
+}        
+
+parse || exit 1
+
+info
 
 ret=0
 while true; do 
@@ -24,7 +100,6 @@ while true; do
   systemctl stop mysql
   systemctl stop postfix
   
-  restorescratchdir="$(find /root/restore.* -maxdepth 0 -mtime -10 -type d  | head)"
   if [ ! -z "$restorescratchdir" ]; then
     if [ $(find "$restorescratchdir" -type f | head -n 400 | wc -l) -lt 300 ]; then
       echo "The pre-existing restore directory ($restorescratchdir) does not appear to be complete.  Ignoring."
