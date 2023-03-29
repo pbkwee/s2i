@@ -99,13 +99,19 @@ while true; do
   systemctl stop apache2
   systemctl stop mysql
   systemctl stop postfix
-  
   if [ ! -z "$restorescratchdir" ]; then
     if [ $(find "$restorescratchdir" -type f | head -n 400 | wc -l) -lt 300 ]; then
       echo "The pre-existing restore directory ($restorescratchdir) does not appear to be complete.  Ignoring."
       restorescratchdir=""
     fi  
   fi
+  # df --block-size 1 /
+  # Filesystem       1B-blocks        Used   Available Use% Mounted on
+  #/dev/root      41972088832 17311182848 23785197568  43% /
+  dffreeb="$(df --block-size 1 / | awk '{print $4}' | egrep -v Available | head -n 1)"
+  archivesizeb="$(( $(stat  --format=%s "$archivegz") * 2))"
+  [ ! -z "$dffreeb" ] && [ ! -z "$archivesizeb" ] && [[ $dffreeb -lt $archivesizeb ]] && echo "There may be insufficient space to do a restore." >&2 && exit 1
+  
   if [ ! -z "$restorescratchdir" ]; then 
     echo "Restoring from pre-existing restore directory: $restorescratchdir"
   else
@@ -137,6 +143,7 @@ rsync --delete --archive --hard-links --acls --xattrs --perms --executability --
 --exclude=sys \
 --exclude=run \
 --exclude=backup* \
+--exclude=s2i* \
 --exclude=media \
 --exclude=etc/hostname \
 --exclude=usr/src/linux-headers* \

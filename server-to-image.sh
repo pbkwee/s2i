@@ -11,8 +11,8 @@ function usage {
   Usage: $0 
     --files (default to / )
 
-    --outputdir output directory [ /root/backup.s2i ]
-    --outputfile output file [ backup-$dt ]
+    --outputdir output directory [ /root/s2i.backup ]
+    --outputfile output file [ s2i.backup-$dt ]
     --outputextn output file extension [ gz | zip | gz.enc depending on encryption ]
     --outputpath output file full path (overrides other output options)
 
@@ -37,13 +37,13 @@ function usage {
   You can use Unix pipes to create a backup on a remote server without using much space for the backup on the source server.
   
   Sample usage using pipes.  On the server being backed up:
-  mkdir bu
-  mkfifo bu/fifo
-  echo '/dont/backup/this/dir' > bu/exclude.log
-  nohup bash ./s2i --outputpath bu/fifo
+  mkdir s2i.backup
+  mkfifo s2i.backup/fifo
+  echo '/dont/backup/this/dir' > s2i.backup/exclude.log
+  nohup bash ./server-to-image.sh --outputpath s2i.backup/fifo
   
   While this is running, go to the destination server:
-  ssh backupserver cat bu/fifo > backupserver.gz
+  ssh backupserver cat s2i.backup/fifo > s2i.backup.gz
   
   Then use the restore.sh script if/when you need to overwrite a server image with a backup image.
   
@@ -59,8 +59,8 @@ encrypt=""
 ishttp=""
 filestobackup=/
 issize=""
-outputdir="${outputdir:-/root/backup.s2i}"
-outputfile="${outputfile:-backup-$dt}"
+outputdir="${outputdir:-/root/s2i.backup}"
+outputfile="${outputfile:-s2i.backup-$dt}"
 function parse() {
   while [ -n "$1" ]; do
     case "$1" in
@@ -197,6 +197,8 @@ find "$([ -d /tmp ] && echo /tmp)"  "$([ -d /var ] && echo /var )" "$([ -d /run 
 
 echo '/root/backup.* 
 /restore* 
+/root/s2i.backup*
+/s2i.restore* 
 /proc 
 /tmp 
 /mnt 
@@ -257,7 +259,7 @@ if [ "$encrypt" == "openssl" ]; then
   tar ${taropts[@]} | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
   [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ] && ret=1
-  echo "OpenSSL command to decrypt the $outputpath backup file openssl enc -d -aes-256-cbc  -md sha256 -pass "pass:$password" -in $outputpath -out backup.tar.gz" | tee -a "$(dirname "$outputpath")/.buinstructions" 
+  echo "OpenSSL command to decrypt the $outputpath backup file openssl enc -d -aes-256-cbc  -md sha256 -pass "pass:$password" -in $outputpath -out s2i.backup.tar.gz" | tee -a "$(dirname "$outputpath")/.buinstructions" 
 elif [ "$encrypt" == "zip" ]; then
   echo "Creating zip file, password encrypted (password is $password), at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
   tar ${taropts[@]} | zip --encrypt --password "$password"  > "$outputpath"
@@ -295,10 +297,10 @@ fi
 
 echo "You can access your backup file via scp:" | tee -a "$(dirname "$outputpath")/.buinstructions"
 if [ "$encrypt" == "openssl" ] ; then
-  echo "mkdir restore.$dt && cd restore.$dt && scp root@$ip:$outputpath /dev/stdout | openssl enc -d -aes-256-cbc  -md sha256 -pass "pass:$password" | tar  --extract --gunzip --numeric-owner --preserve-permissions " | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | openssl enc -d -aes-256-cbc  -md sha256 -pass "pass:$password" | tar  --extract --gunzip --numeric-owner --preserve-permissions " | tee -a "$(dirname "$outputpath")/.buinstructions"
   echo "Should you need openssl for windows, you may download that.  For example from https://curl.se/windows/" | tee -a "$(dirname "$outputpath")/.buinstructions"
 elif [ "$encrypt" == "none" ] ; then
-  echo "mkdir restore.$dt && cd restore.$dt && scp root@$ip:$outputpath /dev/stdout | tar  --extract --gunzip --numeric-owner --preserve-permissions" | tee -a "$(dirname "$outputpath")/.buinstructions"  
+  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | tar  --extract --gunzip --numeric-owner --preserve-permissions" | tee -a "$(dirname "$outputpath")/.buinstructions"  
 elif [ "$encrypt" == "zip" ] ; then
   echo "scp root@$ip:$outputpath ." | tee -a "$(dirname "$outputpath")/.buinstructions"
 else
