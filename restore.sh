@@ -14,7 +14,7 @@ archivegz="$(realpath "$archivegz")"
 
 # location we will be restoring to, typically /
 restoretopath="${restoretopath:-/}"
-restorescratchdir="$(compgen -G "/root/restore.*" >/dev/null && find /root/restore.* -maxdepth 0 -mtime -10 -type d  | head)"
+restorescratchdir="$(compgen -G "/root/s2i.restore.*" >/dev/null && find /root/s2i.restore.* -maxdepth 0 -mtime -10 -type d  | head)"
 
 function usage() {
 echo "$0 usage:
@@ -116,7 +116,7 @@ while true; do
     echo "Restoring from pre-existing restore directory: $restorescratchdir"
   else
     [ ! -f "$archivegz" ] && echo "no backup file '$archivegz', exiting" && ret=1 && break
-    restorescratchdir="/root/restore.$$"
+    restorescratchdir="/root/s2i.restore.$$"
     mkdir -p $restorescratchdir
     cd $restorescratchdir
     echo "Extracting backup from $archivegz $(ls -lh $archivegz) to restore directory $restorescratchdir"
@@ -131,8 +131,8 @@ rsync --delete --archive --hard-links --acls --xattrs --perms --executability --
 --exclude=root/s2i* \
 --exclude=root/rsync* \
 --exclude=root/.ssh/authorized_keys \
---exclude='restore*' \
---exclude='root/restore*' \
+--exclude='s2i.restore*' \
+--exclude='root/s2i.restore*' \
 --exclude='etc/fstab' \
 --exclude='boot' \
 --exclude=proc \

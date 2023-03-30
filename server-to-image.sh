@@ -12,7 +12,7 @@ function usage {
     --files (default to / )
 
     --outputdir output directory [ /root/s2i.backup ]
-    --outputfile output file [ s2i.backup-$dt ]
+    --outputfile output file [ s2i.backup-dt ]
     --outputextn output file extension [ gz | zip | gz.enc depending on encryption ]
     --outputpath output file full path (overrides other output options)
 
@@ -22,7 +22,7 @@ function usage {
     --size output the size of the backup (without creating it or using any disk space)
     
   
-  Put files/directories you wish to exclude in $(dirname "$outputpath")/exclude.log
+  Put files/directories you wish to exclude in outputpath/exclude.log
   
   By default the script will exclude directories including /proc /tmp /mnt /dev /sys /run /media
   
@@ -59,8 +59,9 @@ encrypt=""
 ishttp=""
 filestobackup=/
 issize=""
+ispipe=""
 outputdir="${outputdir:-/root/s2i.backup}"
-outputfile="${outputfile:-s2i.backup-$dt}"
+outputfile="${outputfile:-s2i.backup.$(hostname)-$dt}"
 function parse() {
   while [ -n "$1" ]; do
     case "$1" in
@@ -68,7 +69,8 @@ function parse() {
         shift
         if [ -z "$1" ]; then
           echo "Missing --encrypt type" >&2
-          isusage="xxx"
+          usage
+          return 1
         elif [ "$1" == "openssl" ] ; then
           encrypt="openssl"
         elif [ "$1" == "zip" ]; then
@@ -77,7 +79,8 @@ function parse() {
            encrypt="none"
         else 
           echo "Unrecognized --encrypt type '$1'" >&2
-          isusage="xxx"
+          usage
+          return 1
         fi
       ;;
       --outputdir)
@@ -116,7 +119,8 @@ function parse() {
           shift
           if [ -z "$1" ]; then
             echo "Missing --files argument" >&2
-            isusage="xxx"
+            usage
+            return 1
           fi
           filestobackup="$1"
           for i in $filestobackup; do 
@@ -126,17 +130,24 @@ function parse() {
         --http)
           ishttp="xxx"
         ;;
+        --pipe)
+          ispipe="xxx"
+        ;;
         -? | --help)
-          isusage="xxx"
+          usage
+          return 1
         ;;
         *)
           echo "Unrecognized parameter '$1'" >&2
-          isusage="xxx"
+          usage 
+          return 1
         ;;
       esac
     shift
   done
 }
+
+parse "$@" || exit 1
 
 # rsync typically needed on the restore side
 if ! which rsync 1>/dev/null 2>&1; then 
@@ -148,27 +159,25 @@ if ! which tar 1>/dev/null 2>&1; then
   exit 1 
 fi
 
-parse "$@" || exit 1
-
 [ -z "$ishttp" ] && [ -z "$encrypt" ] && encrypt="none"
 [ -n "$ishttp" ] && [ -z "$encrypt" ] && encrypt="openssl"
 
-if [ "$encrypt" == "openssl" ]; then
+if [ ! -z "$ispiple" ]; then
+  outputextn="${outputextn:-pipe}"
+elif [ "$encrypt" == "openssl" ]; then
   outputextn="${outputextn:-gz.enc}"
 elif [ "$encrypt" == "zip" ]; then
   outputextn="${outputextn:-zip}"
 elif [ "$encrypt" == "none" ]; then
   outputextn="${outputextn:-gz}"
+else
+  outputextn="${outputextn:-gz}"
 fi
 
 outputpath="${outputpath:-$outputdir/$outputfile.$outputextn}"
 
-# Now we are in a position to run usage if needed.
-if [ -n "$isusage" ] ; then
-  usage
-  exit 1
-fi
-
+[ -n "$issize" ] && [ -n "$ispipe" ] && echo "--pipe and --size options are mutually exclusive." >&2 && exit 1
+ 
 # create a backup directory
 [ ! -d "$(dirname "$outputpath")" ] && mkdir -p "$(dirname "$outputpath")"
 
@@ -254,6 +263,11 @@ if [ -n "$issize" ]; then
   exit 0
 fi
 ret=0
+if [ ! -z "$ispipe" ]; then
+  mkfifo "$outputpath" || echo "Failed creating pipe $outputpath" >&2 && exit 1
+  echo "Performing a backup to a pipe.  To consume the backup use something like:"
+  echo "ssh thisserver cat \"$outputpath\" > \"$(basename "$outputpath")\"" 
+fi
 if [ "$encrypt" == "openssl" ]; then
   echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
   tar ${taropts[@]} | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
