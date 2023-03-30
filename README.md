@@ -17,8 +17,8 @@ bash server-to-image.sh --help
   Usage: server-to-image.sh 
     --files (default to / )
 
-    --outputdir output directory [ /root/backup.s2i ]
-    --outputfile output file [ backup-2022-08-03-1659475235 ]
+    --outputdir output directory [ /root/s2i.backup ]
+    --outputfile output file [ s2i.backup-2023-03-30-1680128155 ]
     --outputextn output file extension [ gz | zip | gz.enc depending on encryption ]
     --outputpath output file full path (overrides other output options)
 
@@ -28,7 +28,9 @@ bash server-to-image.sh --help
     --size output the size of the backup (without creating it or using any disk space)
     
   
-  Put files/directories you wish to exclude in /exclude.log
+  Put files/directories you wish to exclude in /root/s2i.backup/exclude.log
+  
+  By default the script will exclude directories including /proc /tmp /mnt /dev /sys /run /media
   
   The default backup includes binary database files (if any, e.g. for postgres and mysql).  You may prefer to exclude them, and run a database dump instead (e.g. per mysqlbackup.sh).
   
@@ -41,15 +43,16 @@ bash server-to-image.sh --help
   You can use Unix pipes to create a backup on a remote server without using much space for the backup on the source server.
   
   Sample usage using pipes.  On the server being backed up:
-  mkdir bu
-  mkfifo bu/fifo
-  echo '/dont/backup/this/dir' > bu/exclude.log
-  bash ./server-to-image.sh --outputpath bu/fifo
+  mkdir s2i.backup
+  mkfifo s2i.backup/fifo
+  echo '/dont/backup/this/dir' > s2i.backup/exclude.log
+  nohup bash ./server-to-image.sh --outputpath s2i.backup/fifo
   
   While this is running, go to the destination server:
-  ssh backupserver cat bu/fifo > backupserver.gz
+  ssh backupserver cat s2i.backup/fifo > s2i.backup.gz
   
   Then use the restore.sh script if/when you need to overwrite a server image with a backup image.
+ 
   ```
   
 # mysqlbackup.sh
