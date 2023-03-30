@@ -20,6 +20,7 @@ function usage {
     --password by default we will create a password for you.  And use the same password each time the same outputdir is used.  NA if encrypt==none.
     --http (serve file on an http url)
     --size output the size of the backup (without creating it or using any disk space)
+    --pipe output backup to a pipe.  Can be used to directly transfer a backup to a separate server without creating an intermediary file on the server being backed up.
     
   
   Put files/directories you wish to exclude in outputpath/exclude.log
