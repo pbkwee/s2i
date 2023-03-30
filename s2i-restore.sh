@@ -14,6 +14,7 @@ archivegz="$(realpath "$archivegz")"
 
 # location we will be restoring to, typically /
 restoretopath="${restoretopath:-/}"
+restorescratchdirdefault="/root/s2i.restore.$$"
 restorescratchdir="$(compgen -G "/root/s2i.restore.*" >/dev/null && find /root/s2i.restore.* -maxdepth 0 -mtime -10 -type d  | head)"
 
 function usage() {
@@ -21,7 +22,8 @@ echo "$0 usage:
   [ --oldip originalip ] [--newip newip ] set if you want to search/replace these IP values on the restored image
   [ --archivegz path ] defaults to the only and only big gz file in the current directory
   [ --restoretopath path ] defaults to the /
-  
+  [ --ignoreports ] lets the restore proceed even if ports are in use.
+  [ --ignorehostname ] lets the restore proceed even if the server hostname is not like backup.something (a safety precaution)
   Will extract the tar.gz archivegz to the restoretopath /
   "
 }
@@ -32,7 +34,8 @@ function info() {
   echo "Restore path: $restoretopath"
   echo "Old IP: $oldip"
   echo "New IP: $newip"
-  echo "Restore scratch dir: $restorescratchdir"
+  [ ! -z "$restorescratchdir" ] && echo "Reuse existing restore scratch dir: ${restorescratchdir}"
+  [ -z "$restorescratchdir" ] && echo "Create restore scratch dir: ${restorescratchdirdefault}"
 }
 
 function parse() {
@@ -72,6 +75,12 @@ function parse() {
         fi
         restoretopath="$1"
         ;;
+      --ignoreports)
+        isignoreports="xxx"
+        ;;
+      --ignorehostname)
+        isignorehostname="xxx"
+        ;;
       --help)
         usage
         return 1
@@ -86,25 +95,28 @@ function parse() {
   done
 }        
 
-parse || exit 1
+parse "$@" || exit 1
+
+if [ ! -z "$restorescratchdir" ]; then
+  if [ $(find "$restorescratchdir" -type f | head -n 400 | wc -l) -lt 300 ]; then
+    echo "The pre-existing restore directory ($restorescratchdir) does not appear to be complete.  Ignoring."
+    restorescratchdir=""
+  fi  
+fi
 
 info
 
 ret=0
 while true; do 
-  ! grep -q  backup <(hostname) && echo 'hostname does not contain the "backup", exiting as a safety precaution.  If this is the right host, set a hostname like: hostname backup.example.com' && ret=1 && break
-  [ 0 -ne $(netstat -ntp | egrep -v ':22|Foreign Address|Active Internet connections' | wc -l) ] && echo "There are some non ssh connections.  wrong server?  exiting." && netstat -ntp && ret=1 && break
+  [ -z "$isignorehostname" ] && ! grep -q  backup <(hostname) && echo 'hostname does not contain the "backup", exiting as a safety precaution.  If this is the right host, set a hostname like: hostname backup.$(hostname)  Disable this check with the --ignorehostname option' && ret=1 && break
+  [ -z "$isignoreports" ] && [ 0 -ne $(netstat -ntp | egrep -v ':22|Foreign Address|Active Internet connections' | wc -l) ] && echo "There are some non ssh connections.  Wrong server?  Disable this check with the --ignoreports option" && netstat -ntp && ret=1 && break
   # Stop services not needed
-  systemctl stop fail2ban
-  systemctl stop apache2
-  systemctl stop mysql
-  systemctl stop postfix
-  if [ ! -z "$restorescratchdir" ]; then
-    if [ $(find "$restorescratchdir" -type f | head -n 400 | wc -l) -lt 300 ]; then
-      echo "The pre-existing restore directory ($restorescratchdir) does not appear to be complete.  Ignoring."
-      restorescratchdir=""
-    fi  
-  fi
+  
+  systemctl stop fail2ban  2>/dev/null
+  systemctl stop apache2  2>/dev/null
+  systemctl stop mysql  2>/dev/null
+  systemctl stop postfix  2>/dev/null
+  systemctl stop dovecot 2>/dev/null
   # df --block-size 1 /
   # Filesystem       1B-blocks        Used   Available Use% Mounted on
   #/dev/root      41972088832 17311182848 23785197568  43% /
@@ -116,7 +128,7 @@ while true; do
     echo "Restoring from pre-existing restore directory: $restorescratchdir"
   else
     [ ! -f "$archivegz" ] && echo "no backup file '$archivegz', exiting" && ret=1 && break
-    restorescratchdir="/root/s2i.restore.$$"
+    restorescratchdir="${restorescratchdirdefault}"
     mkdir -p $restorescratchdir
     cd $restorescratchdir
     echo "Extracting backup from $archivegz $(ls -lh $archivegz) to restore directory $restorescratchdir"
