@@ -29,7 +29,7 @@ echo "$0 usage:
   "
 }
 function info() {
-  echo "Info:"
+  echo "$0 info:"
   echo "Archive gz: $archivegz"
   ls -lh "$archivegz"
   echo "Restore path: $restoretopath"
@@ -129,7 +129,7 @@ while true; do
   dffreeb="$(df --block-size 1 / | awk '{print $4}' | egrep -v Available | head -n 1)"
   [ -f "$archivegz" ] && archivesizeb="$(( $(stat  --format=%s "$archivegz") * 2))"
   if [ -z "$isignorespace" ] && [ ! -z "$dffreeb" ] && [ ! -z "$archivesizeb" ] && [[ $dffreeb -lt $archivesizeb ]]; then
-    echo "There may be insufficient space to do a restore." >&2
+    echo "There may be insufficient space to do a restore.  Disable this check with the --ignorespace option" >&2
     echo "Disk space:"
     df -h /
     exit 1
@@ -142,20 +142,23 @@ while true; do
     restorescratchdir="${restorescratchdirdefault}"
     mkdir -p $restorescratchdir
     cd $restorescratchdir
-    echo "Extracting backup from $archivegz $(ls -lh $archivegz) to restore directory $restorescratchdir"
+    echo "Extracting backup to restore directory $restorescratchdir from $archivegz ($(ls -lh $archivegz))"
     tar xzf "$archivegz"
     [ $? -ne 0 ] && ret=1 && break
   fi
   [ -z "$restorescratchdir" ] && echo "no restore directory set" >&2 && ret=1 && break 
+  echo "Rsync-ing from $restorescratchdir to ${restoretopath:-/}"
    # --force-change for immutables, but does not work on some distros. e.g. 311/2014
 rsync --delete --archive --hard-links --acls --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids --ignore-errors \
 --exclude 'etc/network/interfaces' \
 --exclude=root/backup* \
+--exclude=backup* \
 --exclude=root/s2i* \
+--exclude='root/s2i.restore*' \
+--exclude='s2i.restore*' \
+--exclude='s2i*' \
 --exclude=root/rsync* \
 --exclude=root/.ssh/authorized_keys \
---exclude='s2i.restore*' \
---exclude='root/s2i.restore*' \
 --exclude='etc/fstab' \
 --exclude='boot' \
 --exclude=proc \
@@ -165,16 +168,14 @@ rsync --delete --archive --hard-links --acls --xattrs --perms --executability --
 --exclude=dev \
 --exclude=sys \
 --exclude=run \
---exclude=backup* \
---exclude=s2i* \
 --exclude=media \
---exclude=etc/hostname \
 --exclude=usr/src/linux-headers* \
 --exclude=home/*/.gvfs \
 --exclude=home/*/.cache \
 --exclude=home/*/.local/share/Trash \
 $restorescratchdir/* "${restoretopath:-/}" 2>&1 | tee -a rsync.log
   if [ ${PIPESTATUS[0]} -ne 1 ] ; then 
+    echo "Error result from the rsync." >&2
     ret=1
     break
   fi

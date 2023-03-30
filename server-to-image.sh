@@ -205,9 +205,11 @@ find "$([ -d /tmp ] && echo /tmp)"  "$([ -d /var ] && echo /var )" "$([ -d /run 
 find "$([ -d /tmp ] && echo /tmp)"  "$([ -d /var ] && echo /var )" "$([ -d /run ] && echo /run)" -type p  -print 2>/dev/null >> "$(dirname "$outputpath")/exclude-default.log"
 
 echo '/root/backup.* 
-/restore* 
 /root/s2i.backup*
+/restore* 
 /s2i.restore* 
+/root/s2i* 
+/s2i* 
 /proc 
 /tmp 
 /mnt 
