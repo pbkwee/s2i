@@ -2,19 +2,19 @@
 
 A set of scripts to help with Linux server backups and restores.
 
-server-to-image.sh creates an archive of a Linux server.  One that can be extracted to / on another server to clone the original server.  This is handy if you wanted to take a full backup image of a server, that you may wish to restore at some point in the future.  e.g. after closing down some VM hosting, or in the event of a disaster.  For best results, stop services that may be writing to files prior to creating the archive.
+s2i-create.sh creates an archive of a Linux server.  One that can be extracted to / on another server to clone the original server.  This is handy if you wanted to take a full backup image of a server, that you may wish to restore at some point in the future.  e.g. after closing down some VM hosting, or in the event of a disaster.  For best results, stop services that may be writing to files prior to creating the archive.
 
-backup.sh performs a database backup, uses server-to-image.sh to create an archive image of the server, provides a few options around encryption (openssl, none, or zip), and has an option to make that archive accessible via http (if you prefer not to use a more secure method, like scp/sftp, to access it).
+backup.sh performs a database backup, uses s2i-create.sh to create an archive image of the server, provides a few options around encryption (openssl, none, or zip), and has an option to make that archive accessible via http (if you prefer not to use a more secure method, like scp/sftp, to access it).
 
-restore.sh is a template script to restore that backup over top of an existing server (either the same one from which the backup was taken, or a different server).  It would need to be edited to exclude/include files that may be specific to your setup (e.g. typically networking files).
+s2i-restore.sh is a template script to restore that backup over top of an existing server (either the same one from which the backup was taken, or a different server).  It would need to be edited to exclude/include files that may be specific to your setup (e.g. typically networking files).
 
-# server-to-image.sh
+# s2i-create.sh
 
 ```bash
-bash server-to-image.sh --help
-  server-to-image.sh Creates a backup of a Linux server.  It has options to let you download that via http (else you can scp it from the source).  It has options to encrypt the backup file (e.g. via openssl or zip).
+bash s2i-create.sh --help
+  s2i-create.sh Creates a backup of a Linux server.  It has options to let you download that via http (else you can scp it from the source).  It has options to encrypt the backup file (e.g. via openssl or zip).
   
-  Usage: server-to-image.sh 
+  Usage: s2i-create.sh 
     --files (default to / )
 
     --outputdir output directory [ /root/s2i.backup ]
@@ -38,7 +38,7 @@ bash server-to-image.sh --help
   
   If you use the --http option we will put the file on a URL that should be secret.  However we still recommend you use one of the --encrypt options.
   
-  There is a backup.sh script that will let you run mysql database backups, prior to running server-to-image.sh
+  There is a backup.sh script that will let you run mysql database backups, prior to running s2i-create.sh
   
   You can use Unix pipes to create a backup on a remote server without using much space for the backup on the source server.
   
@@ -46,12 +46,12 @@ bash server-to-image.sh --help
   mkdir s2i.backup
   mkfifo s2i.backup/fifo
   echo '/dont/backup/this/dir' > s2i.backup/exclude.log
-  nohup bash ./server-to-image.sh --outputpath s2i.backup/fifo
+  nohup bash ./s2i-create.sh --outputpath s2i.backup/fifo
   
   While this is running, go to the destination server:
   ssh backupserver cat s2i.backup/fifo > s2i.backup.gz
   
-  Then use the restore.sh script if/when you need to overwrite a server image with a backup image.
+  Then use the s2i-restore.sh script if/when you need to overwrite a server image with a backup image.
  
   ```
   
@@ -73,14 +73,14 @@ mysqlbackup.sh Creates a mysql backup.  Optionally copy that to a backup host
   Uses .mysqlp for a mysql password
 ```  
 
-# restore.sh
+# s2i-restore.sh
 A template for restoring a backup.  Edit as appropriate for your setup.  
 
-Only run restore.sh on a server you are certain can be overwritten.
+Only run s2i-restore.sh on a server you are certain can be overwritten.
 
-As a safeguard to overwriting a production system restore.sh checks for 'backup' in the hostname, and checks for network connections other than ssh to the server.
+As a safeguard to overwriting a production system s2i-restore.sh checks for 'backup' in the hostname, and checks for network connections other than ssh to the server.
 
-restore.sh extracts the archive gz file (created by server-to-image.sh).  Then rsyncs that over top of the server on which you are running the restore.
+s2i-restore.sh extracts the archive gz file (created by s2i-create.sh).  Then rsyncs that over top of the server on which you are running the restore.
 
 Then it does a search/replace in /etc of the old and new IP addresses.
 
@@ -91,5 +91,5 @@ Tested on a few VMs.  Not tested on a physical server.  Use at your own risk.
 RimuHosting offers this backup/restore (+ dist upgrade) as a service.  See https://blog.rimuhosting.com/2021/07/12/distro-upgrade-as-a-service/
 
 ```bash
-oldip=127.0.0.2 newip=127.0.0.3 archivegz=s2i-backup.gz bash restore.sh
+oldip=127.0.0.2 newip=127.0.0.3 archivegz=s2i-backup.gz bash s2i-restore.sh
 ```

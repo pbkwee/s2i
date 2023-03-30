@@ -129,7 +129,7 @@ fi
 
 echo "Creating a backup archive file."
 # $- lists the set options.  e.g. echo $-=>himBH .  If we are -x keep on being -x
-#bash $( [ ! -z "${-//[^x]/}" ] && echo "-x") server-to-image.sh --outputpath "$outputpath"
+#bash $( [ ! -z "${-//[^x]/}" ] && echo "-x") s2i-create.sh --outputpath "$outputpath"
 #[ $? -ne 0 ] && ret=1
 
 [ -z "$remotehost" ] && echo "No --remotehost provided.  Skipping copying backup to any remote host."

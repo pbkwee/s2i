@@ -32,7 +32,7 @@ function usage {
   
   If you use the --http option we will put the file on a URL that should be secret.  However we still recommend you use one of the --encrypt options.
   
-  There is a backup.sh script that will let you run mysql database backups, prior to running server-to-image.sh
+  There is a backup.sh script that will let you run mysql database backups, prior to running s2i-create.sh
   
   You can use Unix pipes to create a backup on a remote server without using much space for the backup on the source server.
   
@@ -40,12 +40,12 @@ function usage {
   mkdir s2i.backup
   mkfifo s2i.backup/fifo
   echo '/dont/backup/this/dir' > s2i.backup/exclude.log
-  nohup bash ./server-to-image.sh --outputpath s2i.backup/fifo
+  nohup bash ./s2i-create.sh --outputpath s2i.backup/fifo
   
   While this is running, go to the destination server:
   ssh backupserver cat s2i.backup/fifo > s2i.backup.gz
   
-  Then use the restore.sh script if/when you need to overwrite a server image with a backup image.
+  Then use the s2i-restore.sh script if/when you need to overwrite a server image with a backup image.
   
   "
   return 0
