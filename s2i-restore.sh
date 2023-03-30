@@ -24,6 +24,7 @@ echo "$0 usage:
   [ --restoretopath path ] defaults to the /
   [ --ignoreports ] lets the restore proceed even if ports are in use.
   [ --ignorehostname ] lets the restore proceed even if the server hostname is not like backup.something (a safety precaution)
+  [ --ignorespace ] lets the restore proceed even if the there may be insufficient space (a safety precaution)
   Will extract the tar.gz archivegz to the restoretopath /
   "
 }
@@ -81,6 +82,11 @@ function parse() {
       --ignorehostname)
         isignorehostname="xxx"
         ;;
+        
+      --ignorespace)
+        isignorespace="xxx"
+        ;;
+        
       --help)
         usage
         return 1
@@ -121,8 +127,13 @@ while true; do
   # Filesystem       1B-blocks        Used   Available Use% Mounted on
   #/dev/root      41972088832 17311182848 23785197568  43% /
   dffreeb="$(df --block-size 1 / | awk '{print $4}' | egrep -v Available | head -n 1)"
-  archivesizeb="$(( $(stat  --format=%s "$archivegz") * 2))"
-  [ ! -z "$dffreeb" ] && [ ! -z "$archivesizeb" ] && [[ $dffreeb -lt $archivesizeb ]] && echo "There may be insufficient space to do a restore." >&2 && exit 1
+  [ -f "$archivegz" ] && archivesizeb="$(( $(stat  --format=%s "$archivegz") * 2))"
+  if [ -z "$isignorespace" ] && [ ! -z "$dffreeb" ] && [ ! -z "$archivesizeb" ] && [[ $dffreeb -lt $archivesizeb ]]; then
+    echo "There may be insufficient space to do a restore." >&2
+    echo "Disk space:"
+    df -h /
+    exit 1
+  fi
   
   if [ ! -z "$restorescratchdir" ]; then 
     echo "Restoring from pre-existing restore directory: $restorescratchdir"
