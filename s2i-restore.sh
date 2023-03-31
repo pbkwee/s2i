@@ -17,8 +17,9 @@ newip="${newip:-$ip}"
 
 # location we will be restoring to, typically /
 restoretopath="${restoretopath:-/}"
-restorescratchdirdefault="/root/s2i.restore.$$"
-restorescratchdir="$(compgen -G "/root/s2i.restore.*" >/dev/null && find /root/s2i.restore.* -maxdepth 0 -mtime -10 -type d  | head)"
+restorescratchdirdefault="/root/s2i.restore"
+#restorescratchdir="$(compgen -G "/root/s2i.restore.*" >/dev/null && find /root/s2i.restore.* -maxdepth 0 -mtime -10 -type d  | head)"
+restorescratchdir="/root/s2i.restore"
 
 # previously had run find / -type d -print0 | xargs -0 -I{} touch  "{}/958567675843" to put this file in all directories.
 # then test after a restore (they should all be cleared).
@@ -109,14 +110,8 @@ function parse() {
 
 parse "$@" || exit 1
 
-# stopping certain services
-# systemctl list-unit-files | cat | grep 'enabled$' 
-#amavis-mc.service                      disabled        enabled
-#amavis.service                         enabled         enabled
-#amavisd-snmp-subagent.service          disabled        enabled
-#apache-htcacheclean.service            disabled        enabled
-#apache-htcacheclean@.service           disabled        enabled
-#for i in $(systemctl list-unit-files | cat | egrep 'enabled.*enabled$' | grep -v '@' | egrep 'postfix|virtualmin|webmin|usermin|named|dovecot|proftp|exim|spamass|php|postgres|mailman|mysql|mariadb|amavis|apache' | awk '{print $1}' ); do echo "Stopping: $i"; systemctl stop $i; done
+
+[ ! -e "$restorescratchdir" ] && restorescratchdir=""
 
 if [ ! -z "$restorescratchdir" ]; then
   if [ $(find "$restorescratchdir" -type f | head -n 400 | wc -l) -lt 300 ]; then
@@ -125,22 +120,32 @@ if [ ! -z "$restorescratchdir" ]; then
   fi  
 fi
 
-[ -z "$archivegz" ] && echo "Use --archivegz file to specify the archive to use." >&2 && exit 1
-[ ! -f "$archivegz" ] && echo "--archivegz file $archivegz not found." >&2 && exit 1
+[ ! -z "$archivegz" ] && [ ! -z "$restorescratchdir" ] && [ -e "$archivegz" ] && [ -e "$restorescratchdir"] && [ ! -z "$archivegz" ] && [ ! -z "$restorescratchdir" ] && [ -e "$archivegz" ] && [ -e "$restorescratchdir" ] && ! find "$restorescratchdir" -maxdepth 0 -newer "$archivegz" && echo "Restore scratch directory ($restorescratchdir) is not newer than the backup ($archivegz).  Will not proceed." >&2 && exit 1 
+
+[ -z "$restorescratchdir" ] && [ -z "$archivegz" ] && echo "Use --archivegz file to specify the archive to use." >&2 && exit 1
+[ -z "$restorescratchdir" ] && [ ! -f "$archivegz" ] && echo "--archivegz file $archivegz not found." >&2 && exit 1
  
 info
 
 ret=0
 while true; do 
+  # systemctl list-unit-files | cat | grep 'enabled$' 
+  #amavis-mc.service                      disabled        enabled
+  #amavis.service                         enabled         enabled
+  #amavisd-snmp-subagent.service          disabled        enabled
+  #apache-htcacheclean.service            disabled        enabled
+  #apache-htcacheclean@.service           disabled        enabled
+  for i in $(systemctl list-unit-files | grep -v '@' | egrep 'redis|fail2ban|postfix|virtualmin|webmin|usermin|named|dovecot|proftp|exim|spamass|php|postgres|mailman|mysql|mariadb|amavis|apache' | awk '{print $1}' ); do 
+    echo "Stopping: $i"
+    systemctl stop $i 
+  done
+
   [ -z "$isignorehostname" ] && ! grep -q  backup <(hostname) && echo 'hostname ($(hostname)) does not contain the "backup", exiting as a safety precaution.  If this is the right host, set a hostname like: hostname backup.$(hostname)  Disable this check with the --ignorehostname option' && ret=1 && break
   [ -z "$isignoreports" ] && [ 0 -ne $(netstat -ntp | egrep -v ':22|Foreign Address|Active Internet connections' | wc -l) ] && echo "There are some non ssh connections.  Wrong server?  Disable this check with the --ignoreports option" && netstat -ntp && ret=1 && break
+  echo "Stopping services that may interfere with the restore."
+
   # Stop services not needed
   
-  systemctl stop fail2ban  2>/dev/null
-  systemctl stop apache2  2>/dev/null
-  systemctl stop mysql  2>/dev/null
-  systemctl stop postfix  2>/dev/null
-  systemctl stop dovecot 2>/dev/null
   # df --block-size 1 /
   # Filesystem       1B-blocks        Used   Available Use% Mounted on
   #/dev/root      41972088832 17311182848 23785197568  43% /
@@ -159,43 +164,38 @@ while true; do
     [ ! -f "$archivegz" ] && echo "no backup file '$archivegz', exiting" && ret=1 && break
     restorescratchdir="${restorescratchdirdefault}"
     mkdir -p $restorescratchdir
-    cd $restorescratchdir
     echo "Extracting backup to restore directory $restorescratchdir from $archivegz ($(ls -lh $archivegz))"
-    tar xzf "$archivegz"
+    tar xzf "$archivegz" --directory "$restorescratchdir"
     [ $? -ne 0 ] && ret=1 && break
   fi
   [ -z "$restorescratchdir" ] && echo "no restore directory set" >&2 && ret=1 && break 
   echo "Rsync-ing from $restorescratchdir to ${restoretopath:-/}"
    # --force-change for immutables, but does not work on some distros. e.g. 311/2014
-rsync --delete --archive --hard-links --acls --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids --ignore-errors \
---exclude 'etc/network/interfaces' \
---exclude=root/backup* \
---exclude=backup* \
---exclude=root/s2i* \
---exclude='root/s2i.restore*' \
---exclude='s2i.restore*' \
---exclude='s2i*' \
---exclude=root/rsync* \
---exclude=root/.ssh/authorized_keys \
---exclude='etc/fstab' \
---exclude='boot' \
---exclude=proc \
---exclude=etc/hostname \
---exclude=tmp \
---exclude=mnt \
---exclude=dev \
---exclude=sys \
---exclude=run \
---exclude=media \
---exclude=usr/src/linux-headers* \
---exclude=home/*/.gvfs \
---exclude=home/*/.cache \
---exclude=home/*/.local/share/Trash \
-$restorescratchdir/* "${restoretopath:-/}" 2>&1 | tee -a rsync.log
+   # --force = force deletion of dirs even if not empty
+   # using realpath below since "rsync /root/s2i.restore /" creates /s2i.restore.  Rather we need "rsync /root/s2i.restore/ /" 
+rsync --force --delete --archive --hard-links --acls --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids --ignore-errors \
+--exclude=/etc/network/interfaces \
+--exclude='/root/s2i*' \
+--exclude=/root/rsync* \
+--exclude=/root/.ssh/authorized_keys \
+--exclude=/etc/fstab \
+--exclude=/boot \
+--exclude=/proc \
+--exclude=/etc/hostname \
+--exclude=/tmp \
+--exclude=/mnt \
+--exclude=/dev \
+--exclude=/sys \
+--exclude=/run \
+--exclude=/media \
+--exclude=/usr/src/linux-headers* \
+--exclude=/home/*/.gvfs \
+--exclude=/home/*/.cache \
+--exclude=/home/*/.local/share/Trash \
+"$(realpath "$restorescratchdir")/" "${restoretopath:-/}" 2>&1 | tee -a rsync.log
   if [ ${PIPESTATUS[0]} -ne 1 ] ; then 
-    echo "Error result from the rsync." >&2
+    echo "Error or warning from rsync." >&2
     ret=1
-    break
   fi
   if [  -z "$oldip" ]; then 
     echo "No oldip provided, not searching and replacing for that."
