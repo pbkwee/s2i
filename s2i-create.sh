@@ -62,7 +62,7 @@ filestobackup=/
 issize=""
 ispipe=""
 outputdir="${outputdir:-/root/s2i.backup}"
-outputfile="${outputfile:-s2i.backup.$(hostname)-$dt}"
+
 function parse() {
   while [ -n "$1" ]; do
     case "$1" in
@@ -163,9 +163,9 @@ fi
 [ -z "$ishttp" ] && [ -z "$encrypt" ] && encrypt="none"
 [ -n "$ishttp" ] && [ -z "$encrypt" ] && encrypt="openssl"
 
-if [ ! -z "$ispiple" ]; then
-  outputextn="${outputextn:-pipe}"
-elif [ "$encrypt" == "openssl" ]; then
+#if [ ! -z "$ispipe" ]; then
+#  outputextn="${outputextn:-}"
+if [ "$encrypt" == "openssl" ]; then
   outputextn="${outputextn:-gz.enc}"
 elif [ "$encrypt" == "zip" ]; then
   outputextn="${outputextn:-zip}"
@@ -175,7 +175,11 @@ else
   outputextn="${outputextn:-gz}"
 fi
 
-outputpath="${outputpath:-$outputdir/$outputfile.$outputextn}"
+outputfile="${outputfile:-s2i.backup.$(hostname)-$dt.$outputextn}"
+destinationoutputfile="$outputfile"
+[ ! -z "$ispipe" ] && outputfile="pipe"
+
+outputpath="${outputpath:-$outputdir/$outputfile}"
 
 [ -n "$issize" ] && [ -n "$ispipe" ] && echo "--pipe and --size options are mutually exclusive." >&2 && exit 1
  
@@ -247,7 +251,8 @@ echo "" | tee "$(dirname "$outputpath")/.buinstructions"
 echo "Encryption set to: '$encrypt'"
 echo "IP: '$ip'"
 echo "Output path: '$outputpath'"
-
+echo "Disk:"
+df -h /
 echo "Starting server-to-image at $dt"
 } | tee -a "$(dirname "$outputpath")/.buinstructions"
 
@@ -267,30 +272,33 @@ if [ -n "$issize" ]; then
 fi
 ret=0
 if [ ! -z "$ispipe" ]; then
-  mkfifo "$outputpath" || echo "Failed creating pipe $outputpath" >&2 && exit 1
+  [ ! -p "$outputpath" ] && [ -e "$outputpath" ] && echo "'$outputpath' already exists and is not a pipe." >&2 && exit 1
+  [ ! -p "$outputpath" ] && { mkfifo "$outputpath" || { echo "Failed creating pipe $outputpath" >&2 && exit 1 ; } }
   echo "Performing a backup to a pipe.  To consume the backup use something like:"
-  echo "ssh thisserver cat \"$outputpath\" > \"$(basename "$outputpath")\"" 
+  echo "ssh $ip cat \"$outputpath\" > \"$destinationoutputfile\"" 
 fi
 if [ "$encrypt" == "openssl" ]; then
   echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
   tar ${taropts[@]} | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
-  [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ] && ret=1
+  [ "${RC[0]}" -ne 0 ] && ret="${RC[0]}"
+  [ "${RC[1]}" -ne 0 ] && ret="${RC[1]}"
   echo "OpenSSL command to decrypt the $outputpath backup file openssl enc -d -aes-256-cbc  -md sha256 -pass "pass:$password" -in $outputpath -out s2i.backup.tar.gz" | tee -a "$(dirname "$outputpath")/.buinstructions" 
 elif [ "$encrypt" == "zip" ]; then
   echo "Creating zip file, password encrypted (password is $password), at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
   tar ${taropts[@]} | zip --encrypt --password "$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
-  [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ] && ret=1
+  [ "${RC[0]}" -ne 0 ] && ret="${RC[0]}"
+  [ "${RC[1]}" -ne 0 ] && ret="${RC[1]}"
 elif [ "$encrypt" == "none" ]; then
   echo "Creating tar file, not encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar ${taropts[@]} > "$outputpath"
+  tar ${taropts[@]} > "$outputpath" 
   ret=$?
 else
   echo "Unexpected encryption type '$encrypt'" >&2
   exit 1
 fi
-[ $ret -ne 0 ] && echo "Backup creation failed.">&2 && exit 1
+[ $ret -ne 0 ] && echo "Backup creation failed or there were warning." >&2
 
 echo "Backup created: $(ls -lh "$outputpath")" | tee -a "$(dirname "$outputpath")/.buinstructions"
 # record the full path of the output
@@ -311,6 +319,7 @@ if [ -n "$ishttp" ]; then
   phppid="$(netstat -ntpl  | grep 32956 | sed 's/.*LISTEN *//' | sed 's#/.*##')"
   [ -n "$phppid" ] && echo "After you have downloaded the file, stop the temporary web server with: kill $phppid" | tee -a "$(dirname "$outputpath")/.buinstructions"
 fi
+
 
 echo "You can access your backup file via scp:" | tee -a "$(dirname "$outputpath")/.buinstructions"
 if [ "$encrypt" == "openssl" ] ; then

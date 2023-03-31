@@ -3,29 +3,35 @@
 # Copyright Rimuhosting.com
 # https://rimuhosting.com
 
+ip="$(ifconfig eth0 2>/dev/null| grep 'inet ' | sed 's/inet addr:/inet /' | awk '{print $2}')"
+# The following works on recent distros with iproute installed.
+[ -z "$ip" ] && ip="$(ip --json route get 1 2>/dev/null | awk -vRS="," '/src/'|tr -d "\""|cut -d: -f2)"
+
 #change these to your IP.  old = original host's IP.  new = the IP on the server we are restoring to
 oldip="${oldip:-127.0.0.3}"
-newip="${newip:-127.0.0.4}"
+newip="${newip:-$ip}"
 
 # gzip file we'll be restoring from
-[ -z "$archivegz" ] && [ "1" == "$(find . -maxdepth 1 -type f -size +100000 | grep '\.gz' | wc -l)" ] && archivegz="$(find . -maxdepth 1 -type f -size +100000 | grep '\.gz')"
-archivegz="${archivegz:-/root/s2i.gz}"
-archivegz="$(realpath "$archivegz")"
+[ -z "$archivegz" ] && [ "1" == "$(find . -maxdepth 1 -type f -size +100000 -mmin -200 | grep '\.gz' | wc -l)" ] && archivegz="$(find . -maxdepth 1 -type f -mmin -200 -size +100000 | grep '\.gz')"
+[ ! -z "$archivegz" ] && archivegz="$(realpath "$archivegz")"
 
 # location we will be restoring to, typically /
 restoretopath="${restoretopath:-/}"
 restorescratchdirdefault="/root/s2i.restore.$$"
 restorescratchdir="$(compgen -G "/root/s2i.restore.*" >/dev/null && find /root/s2i.restore.* -maxdepth 0 -mtime -10 -type d  | head)"
 
+# previously had run find / -type d -print0 | xargs -0 -I{} touch  "{}/958567675843" to put this file in all directories.
+# then test after a restore (they should all be cleared).
+
 function usage() {
 echo "$0 usage:
-  [ --oldip originalip ] [--newip newip ] set if you want to search/replace these IP values on the restored image
+  [ --oldip originalip ] [--newip newip/defaults to this server's IP ] set if you want to search/replace these IP values on the restored image
   [ --archivegz path ] defaults to the only and only big gz file in the current directory
   [ --restoretopath path ] defaults to the /
-  [ --ignoreports ] lets the restore proceed even if ports are in use.
+  [ --ignoreports ] lets the restore proceed even if ports are in use (a safety precaution)
   [ --ignorehostname ] lets the restore proceed even if the server hostname is not like backup.something (a safety precaution)
-  [ --ignorespace ] lets the restore proceed even if the there may be insufficient space (a safety precaution)
-  Will extract the tar.gz archivegz to the restoretopath /
+  [ --ignorespace ] lets the restore proceed even if the script reports there may be insufficient space (a safety precaution)
+  Will extract the tar.gz archivegz to the restoretopath (default /)
   "
 }
 function info() {
@@ -103,6 +109,15 @@ function parse() {
 
 parse "$@" || exit 1
 
+# stopping certain services
+# systemctl list-unit-files | cat | grep 'enabled$' 
+#amavis-mc.service                      disabled        enabled
+#amavis.service                         enabled         enabled
+#amavisd-snmp-subagent.service          disabled        enabled
+#apache-htcacheclean.service            disabled        enabled
+#apache-htcacheclean@.service           disabled        enabled
+#for i in $(systemctl list-unit-files | cat | egrep 'enabled.*enabled$' | grep -v '@' | egrep 'postfix|virtualmin|webmin|usermin|named|dovecot|proftp|exim|spamass|php|postgres|mailman|mysql|mariadb|amavis|apache' | awk '{print $1}' ); do echo "Stopping: $i"; systemctl stop $i; done
+
 if [ ! -z "$restorescratchdir" ]; then
   if [ $(find "$restorescratchdir" -type f | head -n 400 | wc -l) -lt 300 ]; then
     echo "The pre-existing restore directory ($restorescratchdir) does not appear to be complete.  Ignoring."
@@ -110,11 +125,14 @@ if [ ! -z "$restorescratchdir" ]; then
   fi  
 fi
 
+[ -z "$archivegz" ] && echo "Use --archivegz file to specify the archive to use." >&2 && exit 1
+[ ! -f "$archivegz" ] && echo "--archivegz file $archivegz not found." >&2 && exit 1
+ 
 info
 
 ret=0
 while true; do 
-  [ -z "$isignorehostname" ] && ! grep -q  backup <(hostname) && echo 'hostname does not contain the "backup", exiting as a safety precaution.  If this is the right host, set a hostname like: hostname backup.$(hostname)  Disable this check with the --ignorehostname option' && ret=1 && break
+  [ -z "$isignorehostname" ] && ! grep -q  backup <(hostname) && echo 'hostname ($(hostname)) does not contain the "backup", exiting as a safety precaution.  If this is the right host, set a hostname like: hostname backup.$(hostname)  Disable this check with the --ignorehostname option' && ret=1 && break
   [ -z "$isignoreports" ] && [ 0 -ne $(netstat -ntp | egrep -v ':22|Foreign Address|Active Internet connections' | wc -l) ] && echo "There are some non ssh connections.  Wrong server?  Disable this check with the --ignoreports option" && netstat -ntp && ret=1 && break
   # Stop services not needed
   
