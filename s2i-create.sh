@@ -38,13 +38,11 @@ function usage {
   You can use Unix pipes to create a backup on a remote server without using much space for the backup on the source server.
   
   Sample usage using pipes.  On the server being backed up:
-  mkdir s2i.backup
-  mkfifo s2i.backup/fifo
   echo '/dont/backup/this/dir' > s2i.backup/exclude.log
-  nohup bash ./s2i-create.sh --outputpath s2i.backup/fifo
+  nohup bash ./s2i-create.sh --outputdir s2i.backup --pipe
   
   While this is running, go to the destination server:
-  ssh backupserver cat s2i.backup/fifo > s2i.backup.gz
+  ssh backupserver cat s2i.backup/pipe > s2i.backup.gz
   
   Then use the s2i-restore.sh script if/when you need to overwrite a server image with a backup image.
   
