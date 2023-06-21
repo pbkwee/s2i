@@ -74,22 +74,30 @@ mysqlbackup.sh Creates a mysql backup.  Optionally copy that to a backup host
 ```  
 
 # s2i-restore.sh
-A template for restoring a backup.  Edit as appropriate for your setup.  
-
-Only run s2i-restore.sh on a server you are certain can be overwritten.
-
-As a safeguard to overwriting a production system s2i-restore.sh checks for 'backup' in the hostname, and checks for network connections other than ssh to the server.
+Restores an s2i-create.sh backup.
 
 s2i-restore.sh extracts the archive gz file (created by s2i-create.sh).  Then rsyncs that over top of the server on which you are running the restore.
 
-Then it does a search/replace in /etc of the old and new IP addresses.
+It can also do a search/replace in /etc of the old and new IP addresses.
 
-reboot --force, fingers crossed, and you will be booted into a copy of the original server.
+```
+./s2i-restore.sh --help
+./s2i-restore.sh usage:
+  [ --oldip originalip ] [--newip newip/defaults to this server's IP ] set if you want to search/replace these IP values on the restored image
+  [ --archivegz path ] defaults to the only and only big gz file in the current directory
+  [ --restoretopath path ] defaults to the /
+  [ --ignoreports ] lets the restore proceed even if ports are in use (a safety precaution)
+  [ --ignorehostname ] lets the restore proceed even if the server hostname is not like backup.something (a safety precaution)
+  [ --ignorespace ] lets the restore proceed even if the script reports there may be insufficient space (a safety precaution)
+  Will extract the tar.gz archivegz to the restoretopath (default /)
+```
+
+Only run s2i-restore.sh on a server you are certain can be overwritten.
+
+As a safeguard to overwriting a production system s2i-restore.sh checks for 'backup' in the hostname, and checks for network connections other than ssh to the server.  There are options to disable these checks.
+
+After a restore, run a ```reboot --force```, fingers crossed, and you will be booted into a copy of the original server.
 
 Tested on a few VMs.  Not tested on a physical server.  Use at your own risk.
 
 RimuHosting offers this backup/restore (+ dist upgrade) as a service.  See https://blog.rimuhosting.com/2021/07/12/distro-upgrade-as-a-service/
-
-```bash
-oldip=127.0.0.2 newip=127.0.0.3 archivegz=s2i-backup.gz bash s2i-restore.sh
-```
