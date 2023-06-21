@@ -173,7 +173,7 @@ while true; do
    # --force-change for immutables, but does not work on some distros. e.g. 311/2014
    # --force = force deletion of dirs even if not empty
    # using realpath below since "rsync /root/s2i.restore /" creates /s2i.restore.  Rather we need "rsync /root/s2i.restore/ /" 
-rsync --force --delete --archive --hard-links --acls --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids --ignore-errors \
+rsync --force --delete --archive --hard-links --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids --ignore-errors \
 --exclude=/etc/network/interfaces \
 --exclude='/root/s2i*' \
 --exclude=/root/rsync* \
