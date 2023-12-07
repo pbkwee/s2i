@@ -8,6 +8,8 @@ backup.sh performs a database backup, uses s2i-create.sh to create an archive im
 
 s2i-restore.sh is a template script to restore that backup over top of an existing server (either the same one from which the backup was taken, or a different server).  It would need to be edited to exclude/include files that may be specific to your setup (e.g. typically networking files).
 
+Should you need a location to store the backup you can setup an account at https://bakop.com/ which will provide a scp/sftp based storage location for the backup.  Which can be used later if you need to restore that image.
+
 # s2i-create.sh
 
 ```bash
