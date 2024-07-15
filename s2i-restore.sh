@@ -129,6 +129,11 @@ info
 
 ret=0
 while true; do 
+
+  [ -z "$isignorehostname" ] && ! grep -q  backup <(hostname) && echo 'hostname ($(hostname)) does not contain the "backup", exiting as a safety precaution.  If this is the right host, set a hostname like: hostname backup.$(hostname)  Disable this check with the --ignorehostname option' && ret=1 && break
+  [ -z "$isignoreports" ] && [ 0 -ne $(netstat -ntp | egrep -v ':22|Foreign Address|Active Internet connections' | wc -l) ] && echo "There are some non ssh connections.  Wrong server?  Disable this check with the --ignoreports option" && netstat -ntp && ret=1 && break
+  echo "Stopping services that may interfere with the restore."
+  
   # systemctl list-unit-files | cat | grep 'enabled$' 
   #amavis-mc.service                      disabled        enabled
   #amavis.service                         enabled         enabled
@@ -139,10 +144,6 @@ while true; do
     echo "Stopping: $i"
     systemctl stop $i 
   done
-
-  [ -z "$isignorehostname" ] && ! grep -q  backup <(hostname) && echo 'hostname ($(hostname)) does not contain the "backup", exiting as a safety precaution.  If this is the right host, set a hostname like: hostname backup.$(hostname)  Disable this check with the --ignorehostname option' && ret=1 && break
-  [ -z "$isignoreports" ] && [ 0 -ne $(netstat -ntp | egrep -v ':22|Foreign Address|Active Internet connections' | wc -l) ] && echo "There are some non ssh connections.  Wrong server?  Disable this check with the --ignoreports option" && netstat -ntp && ret=1 && break
-  echo "Stopping services that may interfere with the restore."
 
   # Stop services not needed
   
@@ -176,7 +177,7 @@ while true; do
    # --force-change for immutables, but does not work on some distros. e.g. 311/2014
    # --force = force deletion of dirs even if not empty
    # using realpath below since "rsync /root/s2i.restore /" creates /s2i.restore.  Rather we need "rsync /root/s2i.restore/ /" 
-rsync --force --delete --archive --hard-links --acls --xattrs --perms --executability --owner --group --specials --times --numeric-ids --ignore-errors \
+rsync --force --delete --archive --hard-links --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids --ignore-errors \
 --exclude=/etc/network/interfaces \
 --exclude='/root/s2i*' \
 --exclude=/root/rsync* \
