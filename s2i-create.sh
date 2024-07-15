@@ -23,7 +23,7 @@ function usage {
     --pipe output backup to a pipe.  Can be used to directly transfer a backup to a separate server without creating an intermediary file on the server being backed up.
     
   
-  Put files/directories you wish to exclude in outputpath/exclude.log
+  Put files/directories you wish to exclude in [outputdir:-/root/s2i.backup]/exclude.log
   
   By default the script will exclude directories including /proc /tmp /mnt /dev /sys /run /media
   

@@ -168,7 +168,10 @@ while true; do
     tar xzf "$archivegz" --directory "$restorescratchdir"
     [ $? -ne 0 ] && ret=1 && break
   fi
-  [ -z "$restorescratchdir" ] && echo "no restore directory set" >&2 && ret=1 && break 
+  [ -z "$restorescratchdir" ] && echo "no restore directory set" >&2 && ret=1 && break
+  
+  # root@2023-05:~# rsync --exclude-from /asdf/asdf t t2
+  # rsync: [client] failed to open exclude file /asdf/asdf: No such file or directory (2)
   echo "Rsync-ing from $restorescratchdir to ${restoretopath:-/}"
    # --force-change for immutables, but does not work on some distros. e.g. 311/2014
    # --force = force deletion of dirs even if not empty
