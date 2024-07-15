@@ -14,7 +14,7 @@ function usage {
     --outputdir output directory [ /root/s2i.backup ]
     --outputfile output file [ s2i.backup-dt ]
     --outputextn output file extension [ gz | zip | gz.enc depending on encryption ]
-    --outputpath output file full path (overrides other output options)
+    --outputpath output file full path (overrides other output options) [/root/s2i.backup/s2i.backup-{date} ]
 
     --encrypt openssl (default if using --http) | zip (not so secure) | none (default if not using --http)
     --password by default we will create a password for you.  And use the same password each time the same outputdir is used.  NA if encrypt==none.
@@ -110,6 +110,8 @@ function parse() {
         [ -z "$(dirname "$1")" ] && echo "Need a full path and filename for outputpath" >&2 && return 1
         [ "." == "$(dirname "$1")" ] && echo "Need a full path and filename for outputpath" >&2 && return 1
         outputpath="$1"
+        outputdir="$(dirname "$outputpath")"
+        outputfile="$(basename "$outputpath")"
         ;;
         --size)
           issize="xxx"
