@@ -40,7 +40,7 @@ bash s2i-create.sh --help
   
   If you use the --http option we will put the file on a URL that should be secret.  However we still recommend you use one of the --encrypt options.
   
-  There is a backup.sh script that will let you run mysql database backups, prior to running s2i-create.sh
+  There is a mysqlbackup.sh script that will let you run mysql database backups, prior to running s2i-create.sh
   
   You can use Unix pipes to create a backup on a remote server without using much space for the backup on the source server.
   
