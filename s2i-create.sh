@@ -267,7 +267,7 @@ if [ -n "$issize" ]; then
   else
     bytes="NA"
   fi
-  echo "The backup size is $bytes bytes $(which numfmt 2>&1 >/dev/null && numfmt --to=iec-i --suffix=B --padding=7 $bytes)" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "The backup size is $bytes bytes $(which numfmt >/dev/null 2>&1 && numfmt --to=iec-i --suffix=B --padding=7 $bytes)" | tee -a "$(dirname "$outputpath")/.buinstructions"
   exit 0
 fi
 ret=0
