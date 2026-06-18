@@ -10,6 +10,7 @@ function usage {
   
   Usage: $0 
     --files (default to / )
+    --root (defaults to "" meaning /.  If you are mounting a root filesystem elsewhere, you can use something like --root /mnt.  --files and --root are mutually exclusive.)
 
     --outputdir output directory [ /root/s2i.backup ]
     --outputfile output file [ s2i.backup-dt ]
@@ -42,8 +43,10 @@ function usage {
   nohup bash ./s2i-create.sh --outputdir s2i.backup --pipe
   
   While this is running, go to the destination server:
-  ssh backupserver cat s2i.backup/pipe > s2i.backup.gz
-  
+    ssh backupserver cat s2i.backup/pipe > s2i.backup.gz
+  or via curl sftp upload like:
+    cat /root/s2i.backup/pipe | curl -vvv --config ~/.config/backup-curl.conf --fail -k  --show-error   --upload-file -   'sftp://targethost/backup.tar.gz'
+    
   Then use the s2i-restore.sh script if/when you need to overwrite a server image with a backup image.
   
   "
@@ -57,6 +60,7 @@ dt="$(date +%Y-%m-%d-%s)"
 encrypt=""
 ishttp=""
 filestobackup=/
+root=
 issize=""
 ispipe=""
 outputdir="${outputdir:-/root/s2i.backup}"
@@ -124,9 +128,21 @@ function parse() {
             return 1
           fi
           filestobackup="$1"
+          [ $root != "" ] && [ "$filestobackup" != "/" ] && echo "Set --root or --files but not both" >&2 && return 1
           for i in $filestobackup; do 
             [ ! -e "$i" ] && echo "No such file as $i" >&2 && return 1
           done
+        ;;
+        --root)
+          shift
+          if [ -z "$1" ]; then
+            echo "Missing --root argument" >&2
+            usage
+            return 1
+          fi
+          root="$1"
+          [ $root != "" ] && [ "$filestobackup" != "/" ] && echo "Set --root or --files but not both" >&2 && return 1
+          [ ! -d "$root" ] && echo "No such directory as $root" >&2 && return 1
         ;;
         --http)
           ishttp="xxx"
@@ -198,35 +214,43 @@ fi
 #cd "$(dirname "$outputpath")"
 
 # exclude mysql and log files, but keep directory structure
-[ -d /var/log ] && find /var/log -type f | grep -E -v 'mysql|mariadb' > "$(dirname "$outputpath")/exclude-default.log"
-[ -d /var/cache/apt/archives ] && find  /var/cache/apt/archives -type f >> "$(dirname "$outputpath")/exclude-default.log"
+[ -d "$root/var/log" ] && find "$root/var/log" -type f | grep -E -v 'mysql|mariadb' > "$(dirname "$outputpath")/exclude-default.log"
+[ -d "$root/var/cache/apt/archives" ] && find  "$root/var/cache/apt/archives" -type f >> "$(dirname "$outputpath")/exclude-default.log"
 touch "$(dirname "$outputpath")/exclude.log"
 
 #find /var/lib/mysql -type f > "$(dirname "$outputpath")/exclude-default.log"
 
 # exclude sockets and pipes
 # cannot use -type s,p => Arguments to -type should contain only one letter
-find "$([ -d /tmp ] && echo /tmp)"  "$([ -d /var ] && echo /var )" "$([ -d /run ] && echo /run)" -type s  -print 2>/dev/null >> "$(dirname "$outputpath")/exclude-default.log"
-find "$([ -d /tmp ] && echo /tmp)"  "$([ -d /var ] && echo /var )" "$([ -d /run ] && echo /run)" -type p  -print 2>/dev/null >> "$(dirname "$outputpath")/exclude-default.log"
+find "$([ -d "$root/tmp" ] && echo "$root/tmp")"  "$([ -d "$root/var" ] && echo "$root/var" )" "$([ -d "$root/run" ] && echo "$root/run")" -type s  -print 2>/dev/null >> "$(dirname "$outputpath")/exclude-default.log"
+find "$([ -d "$root/tmp" ] && echo "$root/tmp")"  "$([ -d "$root/var" ] && echo "$root/var" )" "$([ -d "$root/run" ] && echo "$root/run")" -type p  -print 2>/dev/null >> "$(dirname "$outputpath")/exclude-default.log"
 
-echo '/root/backup.* 
+echo "/root/backup.* 
 /root/s2i.backup*
 /restore* 
 /s2i.restore* 
 /root/s2i* 
 /s2i* 
-/proc 
-/tmp 
-/mnt 
-/dev 
-/sys
-/run 
-/media 
-/usr/src/linux-headers* 
-/home/*/.gvfs 
-/home/*/.cache 
-/home/*/.local/share/Trash
-' >> "$(dirname "$outputpath")/exclude-default.log"  
+" >> "$(dirname "$outputpath")/exclude-default.log"  
+
+echo "$root/root/backup.* 
+$root/root/s2i.backup*
+$root/restore* 
+$root/s2i.restore* 
+$root/root/s2i* 
+$root/s2i* 
+$root/proc 
+$root/tmp 
+$root/mnt 
+$root/dev 
+$root/sys
+$root/run 
+$root/media 
+$root/usr/src/linux-headers* 
+$root/home/*/.gvfs 
+$root/home/*/.cache 
+$root/home/*/.local/share/Trash
+" >> "$(dirname "$outputpath")/exclude-default.log"  
 
 echo "$(dirname "$outputpath")" >> "$(dirname "$outputpath")/exclude-default.log"
 
@@ -236,7 +260,7 @@ echo "$(dirname "$outputpath")" >> "$(dirname "$outputpath")/exclude-default.log
 taropts=(--numeric-owner --create --preserve-permissions --gzip --file - 
 --exclude-from=$(dirname "$outputpath")/exclude.log
 --exclude-from=$(dirname "$outputpath")/exclude-default.log
-$filestobackup
+$root/$filestobackup
 )
 
 ip="$(ifconfig eth0 2>/dev/null| grep 'inet ' | sed 's/inet addr:/inet /' | awk '{print $2}')"
@@ -252,7 +276,7 @@ echo "Encryption set to: '$encrypt'"
 echo "IP: '$ip'"
 echo "Output path: '$outputpath'"
 echo "Disk:"
-df -h /
+df -h "$root/"
 echo "Starting server-to-image at $dt"
 } | tee -a "$(dirname "$outputpath")/.buinstructions"
 
@@ -275,7 +299,10 @@ if [ ! -z "$ispipe" ]; then
   [ ! -p "$outputpath" ] && [ -e "$outputpath" ] && echo "'$outputpath' already exists and is not a pipe." >&2 && exit 1
   [ ! -p "$outputpath" ] && { mkfifo "$outputpath" || { echo "Failed creating pipe $outputpath" >&2 && exit 1 ; } }
   echo "Performing a backup to a pipe.  To consume the backup use something like:"
-  echo "ssh $ip cat \"$outputpath\" > \"$destinationoutputfile\"" 
+  echo "ssh $ip cat \"$outputpath\" > \"$destinationoutputfile\""
+  echo "or:"
+  echo "cat \"$outputpath\" | curl -vvv --config ~/.config/backup-curl.conf --fail -k  --show-error   --upload-file -   'sftp://targethost/backup.tar.gz'"
+  echo "where   ~/.config/backup-curl.conf could have user = 'username:password'"
 fi
 if [ "$encrypt" == "openssl" ]; then
   echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
@@ -333,4 +360,4 @@ else
   echo "Unrecognized encrypt type of '$encrypt'" >&2
   exit 1 
 fi
-
+exit 0
