@@ -13,24 +13,25 @@ Should you need a location to store the backup you can setup an account at https
 # s2i-create.sh
 
 ```bash
-bash s2i-create.sh --help
   s2i-create.sh Creates a backup of a Linux server.  It has options to let you download that via http (else you can scp it from the source).  It has options to encrypt the backup file (e.g. via openssl or zip).
   
   Usage: s2i-create.sh 
     --files (default to / )
+    --root (defaults to  meaning /.  If you are mounting a root filesystem elsewhere, you can use something like --root /mnt.  --files and --root are mutually exclusive.)
 
     --outputdir output directory [ /root/s2i.backup ]
-    --outputfile output file [ s2i.backup-2023-03-30-1680128155 ]
+    --outputfile output file [ s2i.backup-dt ]
     --outputextn output file extension [ gz | zip | gz.enc depending on encryption ]
-    --outputpath output file full path (overrides other output options)
+    --outputpath output file full path (overrides other output options) [/root/s2i.backup/s2i.backup-{date} ]
 
     --encrypt openssl (default if using --http) | zip (not so secure) | none (default if not using --http)
     --password by default we will create a password for you.  And use the same password each time the same outputdir is used.  NA if encrypt==none.
     --http (serve file on an http url)
     --size output the size of the backup (without creating it or using any disk space)
+    --pipe output backup to a pipe.  Can be used to directly transfer a backup to a separate server without creating an intermediary file on the server being backed up.
     
   
-  Put files/directories you wish to exclude in /root/s2i.backup/exclude.log
+  Put files/directories you wish to exclude in [outputdir:-/root/s2i.backup]/exclude.log
   
   By default the script will exclude directories including /proc /tmp /mnt /dev /sys /run /media
   
@@ -45,16 +46,16 @@ bash s2i-create.sh --help
   You can use Unix pipes to create a backup on a remote server without using much space for the backup on the source server.
   
   Sample usage using pipes.  On the server being backed up:
-  mkdir s2i.backup
-  mkfifo s2i.backup/fifo
   echo '/dont/backup/this/dir' > s2i.backup/exclude.log
-  nohup bash ./s2i-create.sh --outputpath s2i.backup/fifo
+  nohup bash ./s2i-create.sh --outputdir s2i.backup --pipe
   
   While this is running, go to the destination server:
-  ssh backupserver cat s2i.backup/fifo > s2i.backup.gz
-  
+    ssh backupserver cat s2i.backup/pipe > s2i.backup.gz
+  or via curl sftp upload like:
+    cat /root/s2i.backup/pipe | curl -vvv --config ~/.config/backup-curl.conf --fail -k  --show-error   --upload-file -   'sftp://targethost/backup.tar.gz'
+    
   Then use the s2i-restore.sh script if/when you need to overwrite a server image with a backup image.
- 
+   
   ```
   
 # mysqlbackup.sh
