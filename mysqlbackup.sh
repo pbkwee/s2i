@@ -28,12 +28,21 @@ function parse() {
       --outputdir)
         shift
         [ -z "$1" ] && echo "Missing output path" >&2 && return 1
-        [ -z "$(dirname $1)" ] && echo "Need a full path and filename for outputdir" >&2 && return 1
-        [ "." == "$(dirname $1)" ] && echo "Need a full path and filename for outputdir" >&2 && return 1
+        [ -z "$(dirname "$1")" ] && echo "Need a full path and filename for outputdir" >&2 && return 1
+        [ "." == "$(dirname "$1")" ] && echo "Need a full path and filename for outputdir" >&2 && return 1
         outputdir="$1"
         ;;
       --all-databases)
-        databases="$(mysql $([ -f .mysqlp ] && echo "--password $(cat .mysqlp)") -e 'show databases' | cat | egrep -v 'Database|^mysql$|information_schema|performance_schema')"
+        mysqlargs=()
+        if [ -f .mysqlp ]; then
+          mysqlpassword="$(cat .mysqlp)" || return 1
+          mysqlargs=("--password=$mysqlpassword")
+        fi
+        databaseoutput="$(mysql "${mysqlargs[@]}" -e 'show databases')" || {
+          echo "Unable to get a list of the databases from mysql." >&2
+          return 1
+        }
+        databases="$(printf '%s\n' "$databaseoutput" | grep -E -v 'Database|^mysql$|information_schema|performance_schema')"
         [ -z "$databases" ] && echo "Unable to get a list of the databases.  If a password is necessary you may put it in a file .mysqlp " >&2 && return 1
         ;;
       --mysqldump)
@@ -72,14 +81,13 @@ function parse() {
 }
 
 
-parse $*
-[ $? -ne 0 ] && exit 1
+parse "$@" || exit 1
 
-[ -e "$outputdir" ] && [ -d "$outputdir" ] && echo "--outputdir needs to be a directory" >&2 && exit 1
+[ -e "$outputdir" ] && echo "--outputdir already exists" >&2 && exit 1
 
-[ ! -e "$outputdir" ] && mkdir -p "$outputdir" 
+mkdir -p "$outputdir" || exit 1
 
-if which dpkg 2>/dev/null >/dev/null; then
+if command -v dpkg 2>/dev/null >/dev/null; then
   if ! dpkg -l | grep -qai mydumper; then 
     echo "Installing mydumper tool..."
     apt-get -y install mydumper
@@ -91,13 +99,13 @@ if which dpkg 2>/dev/null >/dev/null; then
 fi
 
 [ ! -f .backup.private.key ] && ssh-keygen -f .backup.private.key -t rsa -C "backupkey" -N "" 
-if [ ! -z "$remotehost" ] && [ ! -z "$SSH_AUTH_SOCK" ]; then
-  [ -f .backup.private.key.pub ] && scp .backup.private.* $remotehost: && ssh $remotehost 'mkdir -p .ssh; [ ! -f .ssh/authorized_keys ] && touch .ssh/authorized_keys; ! grep --fixed-strings "$(cat .backup.private.key.pub)" .ssh/authorized_keys && cat .backup.private.key.pub >> .ssh/authorized_keys'    
+if [ -n "$remotehost" ] && [ -n "$SSH_AUTH_SOCK" ]; then
+  [ -f .backup.private.key.pub ] && scp .backup.private.* "$remotehost:" && ssh "$remotehost" 'mkdir -p .ssh; [ ! -f .ssh/authorized_keys ] && touch .ssh/authorized_keys; ! grep --fixed-strings "$(cat .backup.private.key.pub)" .ssh/authorized_keys && cat .backup.private.key.pub >> .ssh/authorized_keys'
 fi
 
 ret=0
 
-if ! which mydumper 2>/dev/null >/dev/null && [ ! -z "$MYSQLDUMP" ] ; then
+if ! command -v mydumper 2>/dev/null >/dev/null && [ -n "$MYSQLDUMP" ] ; then
     echo "Unable to install mydumper, falling back to mysqldump." >&2
     MYSQLDUMP="x"
 fi 
@@ -105,23 +113,34 @@ fi
 [ -z "$databases" ] && echo "No --databases db1,db2 provided, no --all-databases set.  Skipping mysql backups."
 
 # creates a file per db table
-if [ ! -z "$databases" ]; then
+if [ -n "$databases" ]; then
   echo "Backing up databases: $databases to $outputdir"
   [ ! -f .mysqlp ] && echo "No .mysqlp file, not setting a password parameter."
   [ -f .mysqlp ] && echo "Using the contents of .mysqlp file for the mysql password."
-  if which pt-show-grants 2>/dev/null >/dev/null ; then
+  mysqlargs=()
+  mysqldumpargs=()
+  grantsargs=()
+  if [ -f .mysqlp ]; then
+    mysqlpassword="$(cat .mysqlp)" || exit 1
+    mysqlargs=(--password "$mysqlpassword")
+    mysqldumpargs=("--password=$mysqlpassword")
+    grantsargs=("-p$mysqlpassword")
+  fi
+  if command -v pt-show-grants 2>/dev/null >/dev/null ; then
     echo "Saving database grants/permissions to $outputdir/grants.sql"  
-    pt-show-grants $([ -f .mysqlp ] && echo "-p$(cat .mysqlp)") > $outputdir/grants.sql
-    [ $? -ne 0 ] && ret=1
+    pt-show-grants "${grantsargs[@]}" > "$outputdir/grants.sql" || ret=1
   fi
   echo "Backing up $databases..."
+  # Database names are a whitespace-separated list, as in the existing interface.
   for db in $databases; do
     if [ -z "$MYSQLDUMP" ] ; then
-      mydumper $([ -f .mysqlp ] && echo "--password $(cat .mysqlp)") --outputdir "$outputdir" --compress --routines --triggers --events --complete-insert --tz-utc $( [ ! -z "$db" ] && echo " --database $db" )
-      [ $? -ne 0 ] && ret=1
+      mydumper "${mysqlargs[@]}" --outputdir "$outputdir" --compress --routines --triggers --events --complete-insert --tz-utc --database "$db" || ret=1
     else 
-      mysqldump $([ -f .mysqlp ] && echo "--password=$(cat .mysqlp)") --routines --triggers --events --complete-insert --tz-utc $db | gzip > "$outputdir"/"${db}".sql.gz
-      [ $? -ne 0 ] && ret=1
+      mysqldump "${mysqldumpargs[@]}" --routines --triggers --events --complete-insert --tz-utc "$db" | gzip > "$outputdir"/"${db}".sql.gz
+      RC=( "${PIPESTATUS[@]}" )
+      if [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ]; then
+        ret=1
+      fi
     fi
   done
   [ $ret -ne 0 ] && exit 1
@@ -133,19 +152,20 @@ echo "Creating a backup archive file."
 #[ $? -ne 0 ] && ret=1
 
 [ -z "$remotehost" ] && echo "No --remotehost provided.  Skipping copying backup to any remote host."
-if [ ! -z "$remotehost" ]; then
+if [ -n "$remotehost" ]; then
   SSHAGENT=/usr/bin/ssh-agent
   SSHAGENTARGS="-s"
-  if [ -z "$SSH_AUTH_SOCK" -a -x "$SSHAGENT" ]; then
+  if [ -z "$SSH_AUTH_SOCK" ] && [ -x "$SSHAGENT" ]; then
     echo "Creating an agent..."
-    eval $($SSHAGENT $SSHAGENTARGS)
+    eval "$("$SSHAGENT" "$SSHAGENTARGS")"
+    # Capture the PID of the agent this script started.
+    # shellcheck disable=SC2064
     trap "kill $SSH_AGENT_PID && echo killing agent $SSH_AGENT_PID" 0
   fi
   chmod u=rw,og=  .backup.private.key
   ssh-add -l | grep -qai backup || ssh-add .backup.private.key
   echo "Copying backup file to $remotehost"
-  scp -r $outputdir $remotehost:
-  [ $? -ne 0 ] && ret=1
+  scp -r "$outputdir" "$remotehost:" || ret=1
 fi
 
-exit $ret
+exit "$ret"

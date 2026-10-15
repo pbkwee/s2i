@@ -10,7 +10,7 @@ function usage {
   
   Usage: $0 
     --files (default to / )
-    --root (defaults to "" meaning /.  If you are mounting a root filesystem elsewhere, you can use something like --root /mnt.  --files and --root are mutually exclusive.)
+    --root (defaults to an empty value meaning /.  If you are mounting a root filesystem elsewhere, you can use something like --root /mnt.  --files and --root are mutually exclusive.)
 
     --outputdir output directory [ /root/s2i.backup ]
     --outputfile output file [ s2i.backup-dt ]
@@ -128,7 +128,7 @@ function parse() {
             return 1
           fi
           filestobackup="$1"
-          [ $root != "" ] && [ "$filestobackup" != "/" ] && echo "Set --root or --files but not both" >&2 && return 1
+          [ -n "$root" ] && [ "$filestobackup" != "/" ] && echo "Set --root or --files but not both" >&2 && return 1
           for i in $filestobackup; do 
             [ ! -e "$i" ] && echo "No such file as $i" >&2 && return 1
           done
@@ -141,7 +141,7 @@ function parse() {
             return 1
           fi
           root="$1"
-          [ $root != "" ] && [ "$filestobackup" != "/" ] && echo "Set --root or --files but not both" >&2 && return 1
+          [ -n "$root" ] && [ "$filestobackup" != "/" ] && echo "Set --root or --files but not both" >&2 && return 1
           [ ! -d "$root" ] && echo "No such directory as $root" >&2 && return 1
         ;;
         --http)
@@ -167,11 +167,11 @@ function parse() {
 parse "$@" || exit 1
 
 # rsync typically needed on the restore side
-if ! which rsync 1>/dev/null 2>&1; then 
-  which apt-get 1>/dev/null 2>&1 && apt-get -y install rsync 
+if ! command -v rsync 1>/dev/null 2>&1; then
+  command -v apt-get 1>/dev/null 2>&1 && apt-get -y install rsync
 fi
 
-if ! which tar 1>/dev/null 2>&1; then
+if ! command -v tar 1>/dev/null 2>&1; then
   echo "tar not installed." >&2
   exit 1 
 fi
@@ -193,22 +193,22 @@ fi
 
 outputfile="${outputfile:-s2i.backup.$(hostname)-$dt.$outputextn}"
 destinationoutputfile="$outputfile"
-[ ! -z "$ispipe" ] && outputfile="pipe"
+[ -n "$ispipe" ] && outputfile="pipe"
 
 outputpath="${outputpath:-$outputdir/$outputfile}"
 
 [ -n "$issize" ] && [ -n "$ispipe" ] && echo "--pipe and --size options are mutually exclusive." >&2 && exit 1
  
 # create a backup directory
-[ ! -d "$(dirname "$outputpath")" ] && mkdir -p "$(dirname "$outputpath")"
+mkdir -p "$(dirname "$outputpath")" || exit 1
 
 if [ -z "$password" ]; then
   # random password of letters and digits
   [ ! -f "$(dirname "$outputpath")/.bupassword" ] && LC_ALL=C </dev/urandom tr -dc A-Z0-9 | head -c10 > "$(dirname "$outputpath")/.bupassword"
 
-  password="$(cat "$(dirname "$outputpath")/.bupassword")"
+  password="$(cat "$(dirname "$outputpath")/.bupassword")" || exit 1
 else 
-  echo "$password" > "$(dirname "$outputpath")/.bupassword"
+  echo "$password" > "$(dirname "$outputpath")/.bupassword" || exit 1
 fi
 
 #cd "$(dirname "$outputpath")"
@@ -216,7 +216,7 @@ fi
 # exclude mysql and log files, but keep directory structure
 [ -d "$root/var/log" ] && find "$root/var/log" -type f | grep -E -v 'mysql|mariadb' > "$(dirname "$outputpath")/exclude-default.log"
 [ -d "$root/var/cache/apt/archives" ] && find  "$root/var/cache/apt/archives" -type f >> "$(dirname "$outputpath")/exclude-default.log"
-touch "$(dirname "$outputpath")/exclude.log"
+touch "$(dirname "$outputpath")/exclude.log" || exit 1
 
 #find /var/lib/mysql -type f > "$(dirname "$outputpath")/exclude-default.log"
 
@@ -252,15 +252,17 @@ $root/home/*/.cache
 $root/home/*/.local/share/Trash
 " >> "$(dirname "$outputpath")/exclude-default.log"  
 
-echo "$(dirname "$outputpath")" >> "$(dirname "$outputpath")/exclude-default.log"
+dirname "$outputpath" >> "$(dirname "$outputpath")/exclude-default.log"
 
 # create a tar file, exclude certain directories
 # encrypt the data using openssh with the provided password
 
+# --files historically accepts a whitespace-separated list and shell patterns.
+# shellcheck disable=SC2206
 taropts=(--numeric-owner --create --preserve-permissions --gzip --file - 
---exclude-from=$(dirname "$outputpath")/exclude.log
---exclude-from=$(dirname "$outputpath")/exclude-default.log
-$root/$filestobackup
+"--exclude-from=$(dirname "$outputpath")/exclude.log"
+"--exclude-from=$(dirname "$outputpath")/exclude-default.log"
+"$root"/$filestobackup
 )
 
 ip="$(ifconfig eth0 2>/dev/null| grep 'inet ' | sed 's/inet addr:/inet /' | awk '{print $2}')"
@@ -282,20 +284,24 @@ echo "Starting server-to-image at $dt"
 
 if [ -n "$issize" ]; then
   echo "Checking the file size of the backup..." | tee -a "$(dirname "$outputpath")/.buinstructions"
-  if [ "$encrypt" == "openssl" ]; then
-    bytes="$(tar ${taropts[@]} | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  | wc -c)"
-  elif [ "$encrypt" == "zip" ]; then
-    bytes="$(tar ${taropts[@]} | zip --encrypt --password "$password"  | wc -c)"
-  elif [ "$encrypt" == "none" ]; then
-    bytes="$(tar ${taropts[@]} | wc -c)"
-  else
-    bytes="NA"
-  fi
-  echo "The backup size is $bytes bytes $(which numfmt >/dev/null 2>&1 && numfmt --to=iec-i --suffix=B --padding=7 $bytes)" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  bytes="$(
+    set -o pipefail
+    # GNU tar status 1 means changed files; retain the existing warning behavior.
+    if [ "$encrypt" == "openssl" ]; then
+      { tar "${taropts[@]}" || [ "$?" -eq 1 ]; } | openssl enc -aes-256-cbc -md sha256 -pass "pass:$password" | wc -c
+    elif [ "$encrypt" == "zip" ]; then
+      { tar "${taropts[@]}" || [ "$?" -eq 1 ]; } | zip --encrypt --password "$password" | wc -c
+    elif [ "$encrypt" == "none" ]; then
+      { tar "${taropts[@]}" || [ "$?" -eq 1 ]; } | wc -c
+    else
+      exit 1
+    fi
+  )" || { echo "Backup size calculation failed." >&2; exit 1; }
+  echo "The backup size is $bytes bytes $(command -v numfmt >/dev/null 2>&1 && numfmt --to=iec-i --suffix=B --padding=7 "$bytes")" | tee -a "$(dirname "$outputpath")/.buinstructions"
   exit 0
 fi
 ret=0
-if [ ! -z "$ispipe" ]; then
+if [ -n "$ispipe" ]; then
   [ ! -p "$outputpath" ] && [ -e "$outputpath" ] && echo "'$outputpath' already exists and is not a pipe." >&2 && exit 1
   [ ! -p "$outputpath" ] && { mkfifo "$outputpath" || { echo "Failed creating pipe $outputpath" >&2 && exit 1 ; } }
   echo "Performing a backup to a pipe.  To consume the backup use something like:"
@@ -306,26 +312,31 @@ if [ ! -z "$ispipe" ]; then
 fi
 if [ "$encrypt" == "openssl" ]; then
   echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar ${taropts[@]} | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
+  tar "${taropts[@]}" | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
-  [ "${RC[0]}" -ne 0 ] && ret="${RC[0]}"
-  [ "${RC[1]}" -ne 0 ] && ret="${RC[1]}"
-  echo "OpenSSL command to decrypt the $outputpath backup file openssl enc -d -aes-256-cbc  -md sha256 -pass "pass:$password" -in $outputpath -out s2i.backup.tar.gz" | tee -a "$(dirname "$outputpath")/.buinstructions" 
+  tarret="${RC[0]}"
+  ret="${RC[1]}"
+  echo "OpenSSL command to decrypt the $outputpath backup file openssl enc -d -aes-256-cbc  -md sha256 -pass \"pass:$password\" -in $outputpath -out s2i.backup.tar.gz" | tee -a "$(dirname "$outputpath")/.buinstructions"
 elif [ "$encrypt" == "zip" ]; then
   echo "Creating zip file, password encrypted (password is $password), at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar ${taropts[@]} | zip --encrypt --password "$password"  > "$outputpath"
+  tar "${taropts[@]}" | zip --encrypt --password "$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
-  [ "${RC[0]}" -ne 0 ] && ret="${RC[0]}"
-  [ "${RC[1]}" -ne 0 ] && ret="${RC[1]}"
+  tarret="${RC[0]}"
+  ret="${RC[1]}"
 elif [ "$encrypt" == "none" ]; then
   echo "Creating tar file, not encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar ${taropts[@]} > "$outputpath" 
-  ret=$?
+  tar "${taropts[@]}" > "$outputpath"
+  tarret=$?
 else
   echo "Unexpected encryption type '$encrypt'" >&2
   exit 1
 fi
-[ $ret -ne 0 ] && echo "Backup creation failed or there were warning." >&2
+if [ "$ret" -ne 0 ] || [ "$tarret" -gt 1 ]; then
+  echo "Backup creation failed." >&2
+  [ "$ret" -ne 0 ] && exit "$ret"
+  exit "$tarret"
+fi
+[ "$tarret" -eq 1 ] && echo "Backup created with tar warnings." >&2
 
 echo "Backup created: $(ls -lh "$outputpath")" | tee -a "$(dirname "$outputpath")/.buinstructions"
 # record the full path of the output
@@ -333,8 +344,8 @@ echo "$outputpath" > "$(dirname "$outputpath")/.outputpath"
 
 secretdirname="$(LC_ALL=C </dev/urandom tr -dc A-Z0-9 | head -c10)"
 if [ -n "$ishttp" ]; then
-  mkdir -p "$(dirname "$outputpath")/$secretdirname"
-  mv "$outputpath" "$(dirname "$outputpath")/$secretdirname/"
+  mkdir -p "$(dirname "$outputpath")/$secretdirname" || exit 1
+  mv "$outputpath" "$(dirname "$outputpath")/$secretdirname/" || exit 1
   newoutputpath="$(dirname "$outputpath")/$secretdirname/$(basename "$outputpath")"
   echo "Moving the output file from $outputpath file to $newoutputpath, to improve HTTP security" | tee -a "$(dirname "$outputpath")/.buinstructions"
   outputpath="$newoutputpath"
@@ -350,7 +361,7 @@ fi
 
 echo "You can access your backup file via scp:" | tee -a "$(dirname "$outputpath")/.buinstructions"
 if [ "$encrypt" == "openssl" ] ; then
-  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | openssl enc -d -aes-256-cbc  -md sha256 -pass "pass:$password" | tar  --extract --gunzip --numeric-owner --preserve-permissions " | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | openssl enc -d -aes-256-cbc  -md sha256 -pass \"pass:$password\" | tar  --extract --gunzip --numeric-owner --preserve-permissions " | tee -a "$(dirname "$outputpath")/.buinstructions"
   echo "Should you need openssl for windows, you may download that.  For example from https://curl.se/windows/" | tee -a "$(dirname "$outputpath")/.buinstructions"
 elif [ "$encrypt" == "none" ] ; then
   echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | tar  --extract --gunzip --numeric-owner --preserve-permissions" | tee -a "$(dirname "$outputpath")/.buinstructions"  

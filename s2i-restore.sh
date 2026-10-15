@@ -13,7 +13,7 @@ newip="${newip:-$ip}"
 
 # gzip file we'll be restoring from
 [ -z "$archivegz" ] && [ "1" == "$(find . -maxdepth 1 -type f -size +100000 -mmin -200 | grep '\.gz' | wc -l)" ] && archivegz="$(find . -maxdepth 1 -type f -mmin -200 -size +100000 | grep '\.gz')"
-[ ! -z "$archivegz" ] && archivegz="$(realpath "$archivegz")"
+[ -n "$archivegz" ] && archivegz="$(realpath "$archivegz")"
 
 # location we will be restoring to, typically /
 restoretopath="${restoretopath:-/}"
@@ -42,7 +42,7 @@ function info() {
   echo "Restore path: $restoretopath"
   echo "Old IP: $oldip"
   echo "New IP: $newip"
-  [ ! -z "$restorescratchdir" ] && echo "Reuse existing restore scratch dir: ${restorescratchdir}"
+  [ -n "$restorescratchdir" ] && echo "Reuse existing restore scratch dir: ${restorescratchdir}"
   [ -z "$restorescratchdir" ] && echo "Create restore scratch dir: ${restorescratchdirdefault}"
 }
 
@@ -113,14 +113,14 @@ parse "$@" || exit 1
 
 [ ! -e "$restorescratchdir" ] && restorescratchdir=""
 
-if [ ! -z "$restorescratchdir" ]; then
-  if [ $(find "$restorescratchdir" -type f | head -n 400 | wc -l) -lt 300 ]; then
+if [ -n "$restorescratchdir" ]; then
+  if [ "$(find "$restorescratchdir" -type f | head -n 400 | wc -l)" -lt 300 ]; then
     echo "The pre-existing restore directory ($restorescratchdir) does not appear to be complete.  Ignoring."
     restorescratchdir=""
   fi  
 fi
 
-[ ! -z "$archivegz" ] && [ ! -z "$restorescratchdir" ] && [ -e "$archivegz" ] && [ -e "$restorescratchdir"] && [ ! -z "$archivegz" ] && [ ! -z "$restorescratchdir" ] && [ -e "$archivegz" ] && [ -e "$restorescratchdir" ] && ! find "$restorescratchdir" -maxdepth 0 -newer "$archivegz" && echo "Restore scratch directory ($restorescratchdir) is not newer than the backup ($archivegz).  Will not proceed." >&2 && exit 1 
+[ -n "$archivegz" ] && [ -n "$restorescratchdir" ] && [ -e "$archivegz" ] && [ -e "$restorescratchdir" ] && ! find "$restorescratchdir" -maxdepth 0 -newer "$archivegz" && echo "Restore scratch directory ($restorescratchdir) is not newer than the backup ($archivegz).  Will not proceed." >&2 && exit 1
 
 [ -z "$restorescratchdir" ] && [ -z "$archivegz" ] && echo "Use --archivegz file to specify the archive to use." >&2 && exit 1
 [ -z "$restorescratchdir" ] && [ ! -f "$archivegz" ] && echo "--archivegz file $archivegz not found." >&2 && exit 1
@@ -131,7 +131,7 @@ ret=0
 while true; do 
 
   [ -z "$isignorehostname" ] && ! grep -q  backup <(hostname) && echo 'hostname ($(hostname)) does not contain the "backup", exiting as a safety precaution.  If this is the right host, set a hostname like: hostname backup.$(hostname)  Disable this check with the --ignorehostname option' && ret=1 && break
-  [ -z "$isignoreports" ] && [ 0 -ne $(netstat -ntp | egrep -v ':22|Foreign Address|Active Internet connections' | wc -l) ] && echo "There are some non ssh connections.  Wrong server?  Disable this check with the --ignoreports option" && netstat -ntp && ret=1 && break
+  [ -z "$isignoreports" ] && [ 0 -ne "$(netstat -ntp | grep -E -v ':22|Foreign Address|Active Internet connections' | wc -l)" ] && echo "There are some non ssh connections.  Wrong server?  Disable this check with the --ignoreports option" && netstat -ntp && ret=1 && break
   echo "Stopping services that may interfere with the restore."
   
   # systemctl list-unit-files | cat | grep 'enabled$' 
@@ -140,9 +140,9 @@ while true; do
   #amavisd-snmp-subagent.service          disabled        enabled
   #apache-htcacheclean.service            disabled        enabled
   #apache-htcacheclean@.service           disabled        enabled
-  for i in $(systemctl list-unit-files | grep -v '@' | egrep 'redis|fail2ban|postfix|virtualmin|webmin|usermin|named|dovecot|proftp|exim|spamass|php|postgres|mailman|mysql|mariadb|amavis|apache' | awk '{print $1}' ); do 
+  for i in $(systemctl list-unit-files | grep -v '@' | grep -E 'redis|fail2ban|postfix|virtualmin|webmin|usermin|named|dovecot|proftp|exim|spamass|php|postgres|mailman|mysql|mariadb|amavis|apache' | awk '{print $1}' ); do
     echo "Stopping: $i"
-    systemctl stop $i 
+    systemctl stop "$i"
   done
 
   # Stop services not needed
@@ -150,29 +150,32 @@ while true; do
   # df --block-size 1 /
   # Filesystem       1B-blocks        Used   Available Use% Mounted on
   #/dev/root      41972088832 17311182848 23785197568  43% /
-  dffreeb="$(df --block-size 1 / | awk '{print $4}' | egrep -v Available | head -n 1)"
+  dffreeb="$(df --block-size 1 / | awk '{print $4}' | grep -E -v Available | head -n 1)"
   [ -f "$archivegz" ] && archivesizeb="$(( $(stat  --format=%s "$archivegz") * 2))"
-  if [ -z "$isignorespace" ] && [ ! -z "$dffreeb" ] && [ ! -z "$archivesizeb" ] && [[ $dffreeb -lt $archivesizeb ]]; then
+  if [ -z "$isignorespace" ] && [ -n "$dffreeb" ] && [ -n "$archivesizeb" ] && [[ $dffreeb -lt $archivesizeb ]]; then
     echo "There may be insufficient space to do a restore.  Disable this check with the --ignorespace option" >&2
     echo "Disk space:"
     df -h /
     exit 1
   fi
   
-  if [ ! -z "$restorescratchdir" ]; then 
+  if [ -n "$restorescratchdir" ]; then
     echo "Restoring from pre-existing restore directory: $restorescratchdir"
   else
     [ ! -f "$archivegz" ] && echo "no backup file '$archivegz', exiting" && ret=1 && break
     restorescratchdir="${restorescratchdirdefault}"
-    mkdir -p $restorescratchdir
-    echo "Extracting backup to restore directory $restorescratchdir from $archivegz ($(ls -lh $archivegz))"
-    tar xzf "$archivegz" --directory "$restorescratchdir"
-    [ $? -ne 0 ] && ret=1 && break
+    mkdir -p "$restorescratchdir" || { ret=1; break; }
+    echo "Extracting backup to restore directory $restorescratchdir from $archivegz ($(ls -lh "$archivegz"))"
+    if ! tar xzf "$archivegz" --directory "$restorescratchdir"; then
+      ret=1
+      break
+    fi
   fi
   [ -z "$restorescratchdir" ] && echo "no restore directory set" >&2 && ret=1 && break
   
   # root@2023-05:~# rsync --exclude-from /asdf/asdf t t2
   # rsync: [client] failed to open exclude file /asdf/asdf: No such file or directory (2)
+  restorescratchdir="$(realpath "$restorescratchdir")" || { ret=1; break; }
   echo "Rsync-ing from $restorescratchdir to ${restoretopath:-/}"
    # --force-change for immutables, but does not work on some distros. e.g. 311/2014
    # --force = force deletion of dirs even if not empty
@@ -196,10 +199,12 @@ rsync --force --delete --archive --hard-links --xattrs --perms --executability -
 --exclude=/home/*/.gvfs \
 --exclude=/home/*/.cache \
 --exclude=/home/*/.local/share/Trash \
-"$(realpath "$restorescratchdir")/" "${restoretopath:-/}" 2>&1 | tee -a rsync.log
-  if [ ${PIPESTATUS[0]} -ne 1 ] ; then 
+"$restorescratchdir/" "${restoretopath:-/}" 2>&1 | tee -a rsync.log
+  RC=( "${PIPESTATUS[@]}" )
+  if [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ]; then
     echo "Error or warning from rsync." >&2
     ret=1
+    break
   fi
   if [  -z "$oldip" ]; then 
     echo "No oldip provided, not searching and replacing for that."
@@ -215,7 +220,7 @@ rsync --force --delete --archive --hard-links --xattrs --perms --executability -
    break
 done
 # set an exit code
-if [ $ret -ne 0 ]; then 
+if [ "$ret" -ne 0 ]; then
   false;
 else 
   true
