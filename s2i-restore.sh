@@ -17,9 +17,9 @@ newip="${newip:-$ip}"
 
 # location we will be restoring to, typically /
 restoretopath="${restoretopath:-/}"
-restorescratchdirdefault="/root/s2i.restore"
-#restorescratchdir="$(compgen -G "/root/s2i.restore.*" >/dev/null && find /root/s2i.restore.* -maxdepth 0 -mtime -10 -type d  | head)"
-restorescratchdir="/root/s2i.restore"
+restorecache="/root/s2i.restore-cache"
+restorescratchdir=
+restorestagingdir=
 
 # previously had run find / -type d -print0 | xargs -0 -I{} touch  "{}/958567675843" to put this file in all directories.
 # then test after a restore (they should all be cleared).
@@ -35,6 +35,23 @@ echo "$0 usage:
   Will extract the tar.gz archivegz to the restoretopath (default /)
   "
 }
+function select_tar() {
+  local candidate
+  tarcmd=
+  tarmetadataopts=()
+  for candidate in tar gtar; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    [ -n "$tarcmd" ] || tarcmd=$candidate
+    if "$candidate" --acls --xattrs --xattrs-include='*' --version >/dev/null 2>&1; then
+      tarcmd=$candidate
+      tarmetadataopts=(--acls --xattrs --xattrs-include='*')
+      return 0
+    fi
+  done
+  [ -n "$tarcmd" ] && return 0
+  echo "tar not installed." >&2
+  return 1
+}
 function info() {
   echo "$0 info:"
   echo "Archive gz: $archivegz"
@@ -42,8 +59,7 @@ function info() {
   echo "Restore path: $restoretopath"
   echo "Old IP: $oldip"
   echo "New IP: $newip"
-  [ -n "$restorescratchdir" ] && echo "Reuse existing restore scratch dir: ${restorescratchdir}"
-  [ -z "$restorescratchdir" ] && echo "Create restore scratch dir: ${restorescratchdirdefault}"
+  echo "Verified extractions are cached under $restorecache."
 }
 
 function parse() {
@@ -110,20 +126,19 @@ function parse() {
 
 parse "$@" || exit 1
 
+restoretopath=$(realpath -m -- "$restoretopath") || exit 1
 
-[ ! -e "$restorescratchdir" ] && restorescratchdir=""
-
-if [ -n "$restorescratchdir" ]; then
-  if [ "$(find "$restorescratchdir" -type f | head -n 400 | wc -l)" -lt 300 ]; then
-    echo "The pre-existing restore directory ($restorescratchdir) does not appear to be complete.  Ignoring."
-    restorescratchdir=""
-  fi  
+[ -z "$archivegz" ] && echo "Use --archivegz file to specify the archive to use." >&2 && exit 1
+[ ! -f "$archivegz" ] && echo "--archivegz file $archivegz not found." >&2 && exit 1
+select_tar || exit 1
+tarprofile=basic
+if [ "${#tarmetadataopts[@]}" -gt 0 ]; then
+  tarprofile=metadata
 fi
-
-[ -n "$archivegz" ] && [ -n "$restorescratchdir" ] && [ -e "$archivegz" ] && [ -e "$restorescratchdir" ] && ! find "$restorescratchdir" -maxdepth 0 -newer "$archivegz" && echo "Restore scratch directory ($restorescratchdir) is not newer than the backup ($archivegz).  Will not proceed." >&2 && exit 1
-
-[ -z "$restorescratchdir" ] && [ -z "$archivegz" ] && echo "Use --archivegz file to specify the archive to use." >&2 && exit 1
-[ -z "$restorescratchdir" ] && [ ! -f "$archivegz" ] && echo "--archivegz file $archivegz not found." >&2 && exit 1
+if ! command -v sha256sum >/dev/null 2>&1; then
+  echo "sha256sum is required for verified extraction reuse." >&2
+  exit 1
+fi
  
 info
 
@@ -132,20 +147,67 @@ while true; do
 
   [ -z "$isignorehostname" ] && ! grep -q  backup <(hostname) && echo 'hostname ($(hostname)) does not contain the "backup", exiting as a safety precaution.  If this is the right host, set a hostname like: hostname backup.$(hostname)  Disable this check with the --ignorehostname option' && ret=1 && break
   [ -z "$isignoreports" ] && [ 0 -ne "$(netstat -ntp | grep -E -v ':22|Foreign Address|Active Internet connections' | wc -l)" ] && echo "There are some non ssh connections.  Wrong server?  Disable this check with the --ignoreports option" && netstat -ntp && ret=1 && break
-  echo "Stopping services that may interfere with the restore."
-  
-  # systemctl list-unit-files | cat | grep 'enabled$' 
-  #amavis-mc.service                      disabled        enabled
-  #amavis.service                         enabled         enabled
-  #amavisd-snmp-subagent.service          disabled        enabled
-  #apache-htcacheclean.service            disabled        enabled
-  #apache-htcacheclean@.service           disabled        enabled
-  for i in $(systemctl list-unit-files | grep -v '@' | grep -E 'redis|fail2ban|postfix|virtualmin|webmin|usermin|named|dovecot|proftp|exim|spamass|php|postgres|mailman|mysql|mariadb|amavis|apache' | awk '{print $1}' ); do
-    echo "Stopping: $i"
-    systemctl stop "$i"
-  done
-
-  # Stop services not needed
+  if [ -L "$restorecache" ]; then
+    echo "Restore cache must not be a symbolic link: $restorecache" >&2
+    ret=1
+    break
+  fi
+  restorecache=$(realpath -m -- "$restorecache") || { ret=1; break; }
+  if [ "$restoretopath" != / ]; then
+    case "$restoretopath/" in "$restorecache/"*)
+      echo "Restore destination overlaps the extraction cache." >&2
+      ret=1; break;;
+    esac
+    case "$restorecache/" in "$restoretopath/"*)
+      echo "Restore destination overlaps the extraction cache." >&2
+      ret=1; break;;
+    esac
+  fi
+  (umask u=rwx,go=; mkdir -p -- "$restorecache") || { ret=1; break; }
+  if command -v flock >/dev/null 2>&1; then
+    cachelock="$restorecache/.lock"
+    if [ -L "$cachelock" ] || { [ -e "$cachelock" ] && [ ! -f "$cachelock" ]; }; then
+      echo "Restore cache lock must be a regular file: $cachelock" >&2
+      ret=1
+      break
+    fi
+    exec 9>>"$cachelock" || { ret=1; break; }
+    if ! flock --nonblock 9; then
+      echo "Another restore is using $restorecache; retry after it finishes." >&2
+      ret=1
+      break
+    fi
+  fi
+  # Hash stdin so unusual archive filenames cannot alter sha256sum's output format.
+  archivesha=$(sha256sum < "$archivegz") || { ret=1; break; }
+  archivesha=${archivesha%% *}
+  cacheentry="$restorecache/$archivesha-$tarprofile"
+  if [ ! -L "$cacheentry" ] && [ -d "$cacheentry/tree" ] &&
+      [ ! -L "$cacheentry/tree" ] && [ -f "$cacheentry/complete" ] &&
+      [ ! -L "$cacheentry/complete" ] &&
+      cachemarker=$(cat "$cacheentry/complete") &&
+      [ "$cachemarker" = "s2i-restore-v2:$archivesha:$tarprofile" ]; then
+    restorescratchdir="$cacheentry/tree"
+    echo "Reusing verified extraction: $restorescratchdir"
+  elif [ -e "$cacheentry" ] || [ -L "$cacheentry" ]; then
+    echo "Unverified extraction cache: $cacheentry. Move it aside before retrying." >&2
+    ret=1
+    break
+  else
+    restorestagingdir=$(mktemp -d "$restorecache/.extract.XXXXXX") || { ret=1; break; }
+    # Only unpublished staging data owned by this invocation is removed on exit.
+    trap 'if [ -n "$restorestagingdir" ]; then rm -rf -- "$restorestagingdir"; fi' EXIT
+    restorescratchdir="$restorestagingdir/tree"
+    mkdir -m u=rwx,go= -- "$restorescratchdir" || { ret=1; break; }
+  fi
+  if [ "$restoretopath" = / ]; then
+    echo "Stopping services that may interfere with the restore."
+    # Example: systemctl list-unit-files => mysql.service enabled
+    for i in $(systemctl list-unit-files | grep -v '@' | grep -E 'redis|fail2ban|postfix|virtualmin|webmin|usermin|named|dovecot|proftp|exim|spamass|php|postgres|mailman|mysql|mariadb|amavis|apache' | awk '{print $1}' ); do
+      echo "Stopping: $i"
+      systemctl stop "$i"
+    done
+  fi
   
   # df --block-size 1 /
   # Filesystem       1B-blocks        Used   Available Use% Mounted on
@@ -159,17 +221,24 @@ while true; do
     exit 1
   fi
   
-  if [ -n "$restorescratchdir" ]; then
-    echo "Restoring from pre-existing restore directory: $restorescratchdir"
-  else
-    [ ! -f "$archivegz" ] && echo "no backup file '$archivegz', exiting" && ret=1 && break
-    restorescratchdir="${restorescratchdirdefault}"
-    mkdir -p "$restorescratchdir" || { ret=1; break; }
+  if [ -n "$restorestagingdir" ]; then
     echo "Extracting backup to restore directory $restorescratchdir from $archivegz ($(ls -lh "$archivegz"))"
-    if ! tar xzf "$archivegz" --directory "$restorescratchdir"; then
+    if ! "$tarcmd" --extract --gzip --file "$archivegz" --directory "$restorescratchdir" \
+        --numeric-owner --preserve-permissions "${tarmetadataopts[@]}"; then
       ret=1
       break
     fi
+    extractedsha=$(sha256sum < "$archivegz") || { ret=1; break; }
+    if [ "${extractedsha%% *}" != "$archivesha" ]; then
+      echo "Archive changed during extraction; the extraction will not be reused." >&2
+      ret=1
+      break
+    fi
+    # Publish the completion record with its tree; never copy it to the restore target.
+    printf '%s\n' "s2i-restore-v2:$archivesha:$tarprofile" > "$restorestagingdir/complete" || { ret=1; break; }
+    mv --no-target-directory -- "$restorestagingdir" "$cacheentry" || { ret=1; break; }
+    restorestagingdir=
+    restorescratchdir="$cacheentry/tree"
   fi
   [ -z "$restorescratchdir" ] && echo "no restore directory set" >&2 && ret=1 && break
   
@@ -181,6 +250,7 @@ while true; do
    # --force = force deletion of dirs even if not empty
    # using realpath below since "rsync /root/s2i.restore /" creates /s2i.restore.  Rather we need "rsync /root/s2i.restore/ /" 
 rsync --force --delete --archive --hard-links --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids --ignore-errors \
+--exclude="$restorecache/" \
 --exclude=/etc/network/interfaces \
 --exclude='/root/s2i*' \
 --exclude=/root/rsync* \
@@ -215,7 +285,21 @@ rsync --force --delete --archive --hard-links --xattrs --perms --executability -
     #/etc/hosts:206.123.106.136 prod-u20.example.com
     #/etc/apache2/sites-available/000-default.conf:NameVirtualHost 127.0.0.3:80
     #/etc/apache2/sites-available/000-default.conf:NameVirtualHost 127.0.0.3:443
-    find /etc/ -type f | xargs grep -l "$oldip" | grep -v hosts | xargs --no-run-if-empty replace "$oldip" "$newip" --
+    find "${restoretopath%/}/etc/" -type f ! -name hosts -print0 | (
+      while IFS= read -r -d '' configfile; do
+        if grep -q -F -- "$oldip" "$configfile"; then
+          replace "$oldip" "$newip" -- "$configfile" || exit 1
+        else
+          grepstatus=$?
+          [ "$grepstatus" -eq 1 ] || exit 1
+        fi
+      done
+    )
+    RC=( "${PIPESTATUS[@]}" )
+    if [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ]; then
+      echo "Failed to update IP addresses under ${restoretopath%/}/etc/." >&2
+      ret=1
+    fi
    fi
    break
 done

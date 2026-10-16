@@ -4,13 +4,18 @@ A set of scripts to help with Linux server backups and restores.
 
 s2i-create.sh creates an archive of a Linux server.  One that can be extracted to / on another server to clone the original server.  This is handy if you wanted to take a full backup image of a server, that you may wish to restore at some point in the future.  e.g. after closing down some VM hosting, or in the event of a disaster.  For best results, stop services that may be writing to files prior to creating the archive.
 
-backup.sh performs a database backup, uses s2i-create.sh to create an archive image of the server, provides a few options around encryption (openssl, none, or zip), and has an option to make that archive accessible via http (if you prefer not to use a more secure method, like scp/sftp, to access it).
+mysqlbackup.sh creates MySQL database dumps and can copy them to a remote host over SSH. Run it before s2i-create.sh if you need database dumps in the server image. Store the dumps in a directory included in that image.
+
+s2i-create.sh creates the server image, supports encryption (openssl, none, or zip), and can serve the archive over HTTP. You can also copy the archive using scp/sftp.
 
 s2i-restore.sh is a template script to restore that backup over top of an existing server (either the same one from which the backup was taken, or a different server).  It would need to be edited to exclude/include files that may be specific to your setup (e.g. typically networking files).
 
 Should you need a location to store the backup you can setup an account at https://bakop.com/ which will provide a scp/sftp based storage location for the backup.  Which can be used later if you need to restore that image.
 
 # s2i-create.sh
+
+Image creation and extraction use ACL and extended-attribute options when a supporting `tar` or `gtar` is installed.
+Otherwise, the scripts continue without those options.
 
 ```bash
   s2i-create.sh Creates a backup of a Linux server.  It has options to let you download that via http (else you can scp it from the source).  It has options to encrypt the backup file (e.g. via openssl or zip).
@@ -68,6 +73,7 @@ mysqlbackup.sh Creates a mysql backup.  Optionally copy that to a backup host
   Usage: mysqlbackup.sh
     --databases mysql database names to backup.  defaults to none.  If .mysqlp is present it will be used for the pasword
     --all-databases backs up all user mysql databases
+    --mysqldump use mysqldump instead of mydumper; also used automatically if mydumper is unavailable
     --outputdir where to place the backup image [ defaults to ./mysqldump ]
     --remotehost IP address or hostname of host where you wish to copy the backup image
   
@@ -81,7 +87,19 @@ Restores an s2i-create.sh backup.
 
 s2i-restore.sh extracts the archive gz file (created by s2i-create.sh).  Then rsyncs that over top of the server on which you are running the restore.
 
-It can also do a search/replace in /etc of the old and new IP addresses.
+It can also replace the old IP address with the new IP address in the destination's `/etc` directory.
+Services on the running host are stopped only when restoring to `/`.
+
+Completed extractions are cached under `/root/s2i.restore-cache`, keyed by the archive's SHA-256 hash and whether metadata options were used.
+Each attempt hashes the selected archive. A new extraction is published for reuse only after tar succeeds and a second hash confirms that the archive did not change.
+The completion record sits outside the extracted filesystem and is not copied to the restore target.
+Failed extraction attempts remove their staging data. Completed caches remain available after a failed copy or IP update.
+
+Restores require `sha256sum`. When `flock` is available, a lock prevents concurrent restores from using the cache at the same time.
+Otherwise, restores continue without locking.
+Legacy extraction directories are left alone. An invalid cache entry is rejected with instructions to move it aside.
+Keep cached contents unchanged, and remove the cache after you have finished restoring to free its disk space.
+The archive must be available on every attempt.
 
 ```
 ./s2i-restore.sh --help

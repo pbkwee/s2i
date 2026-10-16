@@ -10,6 +10,7 @@ function usage {
   Usage: $0
     --databases mysql database names to backup.  defaults to none.  If .mysqlp is present it will be used for the pasword
     --all-databases backs up all user mysql databases
+    --mysqldump use mysqldump instead of mydumper
     --outputdir where to place the backup image [ defaults to ./mysqldump ]
     --remotehost IP address or hostname of host where you wish to copy the backup image
   
@@ -42,7 +43,7 @@ function parse() {
           echo "Unable to get a list of the databases from mysql." >&2
           return 1
         }
-        databases="$(printf '%s\n' "$databaseoutput" | grep -E -v 'Database|^mysql$|information_schema|performance_schema')"
+        databases="$(printf '%s\n' "$databaseoutput" | grep -E -v '^(Database|mysql|information_schema|performance_schema)$')"
         [ -z "$databases" ] && echo "Unable to get a list of the databases.  If a password is necessary you may put it in a file .mysqlp " >&2 && return 1
         ;;
       --mysqldump)
@@ -105,7 +106,7 @@ fi
 
 ret=0
 
-if ! command -v mydumper 2>/dev/null >/dev/null && [ -n "$MYSQLDUMP" ] ; then
+if ! command -v mydumper 2>/dev/null >/dev/null && [ -z "$MYSQLDUMP" ] ; then
     echo "Unable to install mydumper, falling back to mysqldump." >&2
     MYSQLDUMP="x"
 fi 

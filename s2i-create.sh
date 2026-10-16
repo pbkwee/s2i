@@ -53,6 +53,24 @@ function usage {
   return 0
 }
 
+function select_tar() {
+  local candidate
+  tarcmd=
+  tarmetadataopts=()
+  for candidate in tar gtar; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    [ -n "$tarcmd" ] || tarcmd=$candidate
+    if "$candidate" --acls --xattrs --xattrs-include='*' --version >/dev/null 2>&1; then
+      tarcmd=$candidate
+      tarmetadataopts=(--acls --xattrs --xattrs-include='*')
+      return 0
+    fi
+  done
+  [ -n "$tarcmd" ] && return 0
+  echo "tar not installed." >&2
+  return 1
+}
+
 # date like 2021-06-28-1624846640
 dt="$(date +%Y-%m-%d-%s)"
 
@@ -166,14 +184,11 @@ function parse() {
 
 parse "$@" || exit 1
 
+select_tar || exit 1
+
 # rsync typically needed on the restore side
 if ! command -v rsync 1>/dev/null 2>&1; then
   command -v apt-get 1>/dev/null 2>&1 && apt-get -y install rsync
-fi
-
-if ! command -v tar 1>/dev/null 2>&1; then
-  echo "tar not installed." >&2
-  exit 1 
 fi
 
 [ -z "$ishttp" ] && [ -z "$encrypt" ] && encrypt="none"
@@ -259,7 +274,8 @@ dirname "$outputpath" >> "$(dirname "$outputpath")/exclude-default.log"
 
 # --files historically accepts a whitespace-separated list and shell patterns.
 # shellcheck disable=SC2206
-taropts=(--numeric-owner --create --preserve-permissions --gzip --file - 
+taropts=(--numeric-owner --create --preserve-permissions
+"${tarmetadataopts[@]}" --gzip --file -
 "--exclude-from=$(dirname "$outputpath")/exclude.log"
 "--exclude-from=$(dirname "$outputpath")/exclude-default.log"
 "$root"/$filestobackup
@@ -288,11 +304,11 @@ if [ -n "$issize" ]; then
     set -o pipefail
     # GNU tar status 1 means changed files; retain the existing warning behavior.
     if [ "$encrypt" == "openssl" ]; then
-      { tar "${taropts[@]}" || [ "$?" -eq 1 ]; } | openssl enc -aes-256-cbc -md sha256 -pass "pass:$password" | wc -c
+      { "$tarcmd" "${taropts[@]}" || [ "$?" -eq 1 ]; } | openssl enc -aes-256-cbc -md sha256 -pass "pass:$password" | wc -c
     elif [ "$encrypt" == "zip" ]; then
-      { tar "${taropts[@]}" || [ "$?" -eq 1 ]; } | zip --encrypt --password "$password" | wc -c
+      { "$tarcmd" "${taropts[@]}" || [ "$?" -eq 1 ]; } | zip --encrypt --password "$password" | wc -c
     elif [ "$encrypt" == "none" ]; then
-      { tar "${taropts[@]}" || [ "$?" -eq 1 ]; } | wc -c
+      { "$tarcmd" "${taropts[@]}" || [ "$?" -eq 1 ]; } | wc -c
     else
       exit 1
     fi
@@ -312,20 +328,20 @@ if [ -n "$ispipe" ]; then
 fi
 if [ "$encrypt" == "openssl" ]; then
   echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar "${taropts[@]}" | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
+  "$tarcmd" "${taropts[@]}" | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
   tarret="${RC[0]}"
   ret="${RC[1]}"
   echo "OpenSSL command to decrypt the $outputpath backup file openssl enc -d -aes-256-cbc  -md sha256 -pass \"pass:$password\" -in $outputpath -out s2i.backup.tar.gz" | tee -a "$(dirname "$outputpath")/.buinstructions"
 elif [ "$encrypt" == "zip" ]; then
   echo "Creating zip file, password encrypted (password is $password), at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar "${taropts[@]}" | zip --encrypt --password "$password"  > "$outputpath"
+  "$tarcmd" "${taropts[@]}" | zip --encrypt --password "$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
   tarret="${RC[0]}"
   ret="${RC[1]}"
 elif [ "$encrypt" == "none" ]; then
   echo "Creating tar file, not encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  tar "${taropts[@]}" > "$outputpath"
+  "$tarcmd" "${taropts[@]}" > "$outputpath"
   tarret=$?
 else
   echo "Unexpected encryption type '$encrypt'" >&2
@@ -360,11 +376,19 @@ fi
 
 
 echo "You can access your backup file via scp:" | tee -a "$(dirname "$outputpath")/.buinstructions"
+if [ "$encrypt" != zip ]; then
+  # The destination may have different tar support from the backup host.
+  {
+    echo "Run these commands in Bash on the destination:"
+    declare -f select_tar
+    echo 'select_tar || exit 1'
+  } | tee -a "$(dirname "$outputpath")/.buinstructions"
+fi
 if [ "$encrypt" == "openssl" ] ; then
-  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | openssl enc -d -aes-256-cbc  -md sha256 -pass \"pass:$password\" | tar  --extract --gunzip --numeric-owner --preserve-permissions " | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | openssl enc -d -aes-256-cbc  -md sha256 -pass \"pass:$password\" | \"\$tarcmd\" --extract --gunzip --numeric-owner --preserve-permissions \"\${tarmetadataopts[@]}\"" | tee -a "$(dirname "$outputpath")/.buinstructions"
   echo "Should you need openssl for windows, you may download that.  For example from https://curl.se/windows/" | tee -a "$(dirname "$outputpath")/.buinstructions"
 elif [ "$encrypt" == "none" ] ; then
-  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | tar  --extract --gunzip --numeric-owner --preserve-permissions" | tee -a "$(dirname "$outputpath")/.buinstructions"  
+  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | \"\$tarcmd\" --extract --gunzip --numeric-owner --preserve-permissions \"\${tarmetadataopts[@]}\"" | tee -a "$(dirname "$outputpath")/.buinstructions"
 elif [ "$encrypt" == "zip" ] ; then
   echo "scp root@$ip:$outputpath ." | tee -a "$(dirname "$outputpath")/.buinstructions"
 else
