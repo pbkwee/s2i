@@ -21,6 +21,33 @@ restorecache="/root/s2i.restore-cache"
 restorescratchdir=
 restorestagingdir=
 
+# Keep the destination's network identity, including absent paths: importing an image's
+# alternate network manager configuration can otherwise take over on the next boot.
+# Use the same rooted patterns for rsync and the later IP replacement pass.
+networkpreservepaths=(
+  /etc/hostname /etc/hosts
+  /etc/network/interfaces /etc/network/interfaces.d
+  /etc/netplan /lib/netplan /usr/lib/netplan
+  /etc/NetworkManager
+  /lib/NetworkManager/system-connections /usr/lib/NetworkManager/system-connections
+  /etc/systemd/network /etc/systemd/networkd.conf /etc/systemd/networkd.conf.d
+  /etc/systemd/resolved.conf /etc/systemd/resolved.conf.d
+  /etc/sysconfig/network /etc/sysconfig/networking
+  '/etc/sysconfig/network-scripts/ifcfg-*'
+  '/etc/sysconfig/network-scripts/route-*' '/etc/sysconfig/network-scripts/route6-*'
+  '/etc/sysconfig/network-scripts/rule-*' '/etc/sysconfig/network-scripts/rule6-*'
+  '/etc/sysconfig/network-scripts/keys-*'
+  /etc/sysconfig/static-routes /etc/sysconfig/static-routes-ipv6
+  /etc/cloud /var/lib/cloud
+  /etc/resolv.conf /etc/resolvconf /etc/resolvconf.conf
+  '/etc/dhcp/dhclient*' '/etc/dhcp3/dhclient*' /etc/dhclient.conf /etc/dhcpcd.conf
+  '/etc/udev/rules.d/*net*.rules'
+)
+networkexcludeopts=()
+for networkpath in "${networkpreservepaths[@]}"; do
+  networkexcludeopts+=("--exclude=$networkpath")
+done
+
 # previously had run find / -type d -print0 | xargs -0 -I{} touch  "{}/958567675843" to put this file in all directories.
 # then test after a restore (they should all be cleared).
 
@@ -33,7 +60,22 @@ echo "$0 usage:
   [ --ignorehostname ] lets the restore proceed even if the server hostname is not like backup.something (a safety precaution)
   [ --ignorespace ] lets the restore proceed even if the script reports there may be insufficient space (a safety precaution)
   Will extract the tar.gz archivegz to the restoretopath (default /)
+  Retains common destination network, resolver and cloud-init configuration; review compatibility before restoring a different distro.
   "
+}
+function is_preserved_network_path() {
+  local pattern parent name
+  for pattern in "${networkpreservepaths[@]}"; do
+    # Globs in this list apply only to the last component. Unlike rsync, Bash * matches /.
+    parent=${pattern%/*}
+    case "$1" in "$parent"/*)
+      name=${1#"$parent/"}
+      name=${name%%/*}
+      # shellcheck disable=SC2254
+      case "$name" in ${pattern##*/}) return 0;; esac
+    esac
+  done
+  return 1
 }
 function select_tar() {
   local candidate
@@ -251,14 +293,13 @@ while true; do
    # using realpath below since "rsync /root/s2i.restore /" creates /s2i.restore.  Rather we need "rsync /root/s2i.restore/ /" 
 rsync --force --delete --archive --hard-links --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids --ignore-errors \
 --exclude="$restorecache/" \
---exclude=/etc/network/interfaces \
+"${networkexcludeopts[@]}" \
 --exclude='/root/s2i*' \
 --exclude=/root/rsync* \
 --exclude=/root/.ssh/authorized_keys \
 --exclude=/etc/fstab \
 --exclude=/boot \
 --exclude=/proc \
---exclude=/etc/hostname \
 --exclude=/tmp \
 --exclude=/mnt \
 --exclude=/dev \
@@ -287,6 +328,8 @@ rsync --force --delete --archive --hard-links --xattrs --perms --executability -
     #/etc/apache2/sites-available/000-default.conf:NameVirtualHost 127.0.0.3:443
     find "${restoretopath%/}/etc/" -type f ! -name hosts -print0 | (
       while IFS= read -r -d '' configfile; do
+        # rsync exclusions alone do not protect retained files from this second pass.
+        is_preserved_network_path "${configfile#"${restoretopath%/}"}" && continue
         if grep -q -F -- "$oldip" "$configfile"; then
           replace "$oldip" "$newip" -- "$configfile" || exit 1
         else

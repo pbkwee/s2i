@@ -8,7 +8,7 @@ mysqlbackup.sh creates MySQL database dumps and can copy them to a remote host o
 
 s2i-create.sh creates the server image, supports encryption (openssl, none, or zip), and can serve the archive over HTTP. You can also copy the archive using scp/sftp.
 
-s2i-restore.sh is a template script to restore that backup over top of an existing server (either the same one from which the backup was taken, or a different server).  It would need to be edited to exclude/include files that may be specific to your setup (e.g. typically networking files).
+s2i-restore.sh restores that backup over an existing server. It retains common destination network configurations by default. Review its exclusions for custom configurations and compatibility with the restored distribution.
 
 Should you need a location to store the backup you can setup an account at https://bakop.com/ which will provide a scp/sftp based storage location for the backup.  Which can be used later if you need to restore that image.
 
@@ -90,6 +90,27 @@ s2i-restore.sh extracts the archive gz file (created by s2i-create.sh).  Then rs
 It can also replace the old IP address with the new IP address in the destination's `/etc` directory.
 Services on the running host are stopped only when restoring to `/`.
 
+The restore keeps the destination's existing network configuration and prevents the image
+from introducing files at the same protected paths. Those paths also stay unchanged during IP replacement.
+
+| Configuration | Protected paths |
+| --- | --- |
+| Host identity | `/etc/hostname`, `/etc/hosts` |
+| Debian interfaces | `/etc/network/interfaces`, `/etc/network/interfaces.d` |
+| Netplan | `/etc/netplan`, `/lib/netplan`, `/usr/lib/netplan` |
+| NetworkManager | `/etc/NetworkManager` and persistent `system-connections` profiles under `/lib/NetworkManager` and `/usr/lib/NetworkManager` |
+| systemd networking and DNS | `/etc/systemd/network`, `networkd.conf`, `resolved.conf` and their `.d` directories |
+| Red Hat style | `/etc/sysconfig/network`, `networking`, `static-routes`, `static-routes-ipv6`; `ifcfg-*`, `route-*`, `route6-*`, `rule-*`, `rule6-*` and `keys-*` under `/etc/sysconfig/network-scripts` |
+| Cloud-init | `/etc/cloud`, `/var/lib/cloud` |
+| Resolver and DHCP client | `/etc/resolv.conf`, `/etc/resolvconf`, `/etc/resolvconf.conf`, `dhclient*` configuration/hooks under `/etc/dhcp` and `/etc/dhcp3`, `/etc/dhclient.conf`, `/etc/dhcpcd.conf` |
+| Interface naming | `/etc/udev/rules.d/*net*.rules` |
+
+Network executables and services still come from the image. Retaining their configuration does
+not translate formats or install a compatible network manager. For a different distribution or
+release, verify that the restored system can use the retained configuration before rebooting.
+Resolver symlinks remain symlinks; their target and resolver service must work after restoration.
+Review custom interface rules, hooks and network files outside the protected paths.
+
 Completed extractions are cached under `/root/s2i.restore-cache`, keyed by the archive's SHA-256 hash and whether metadata options were used.
 Each attempt hashes the selected archive. A new extraction is published for reuse only after tar succeeds and a second hash confirms that the archive did not change.
 The completion record sits outside the extracted filesystem and is not copied to the restore target.
@@ -111,13 +132,14 @@ The archive must be available on every attempt.
   [ --ignorehostname ] lets the restore proceed even if the server hostname is not like backup.something (a safety precaution)
   [ --ignorespace ] lets the restore proceed even if the script reports there may be insufficient space (a safety precaution)
   Will extract the tar.gz archivegz to the restoretopath (default /)
+  Retains common destination network, resolver and cloud-init configuration; review compatibility before restoring a different distro.
 ```
 
 Only run s2i-restore.sh on a server you are certain can be overwritten.
 
 As a safeguard to overwriting a production system s2i-restore.sh checks for 'backup' in the hostname, and checks for network connections other than ssh to the server.  There are options to disable these checks.
 
-After a restore, run a ```reboot --force```, fingers crossed, and you will be booted into a copy of the original server.
+Before rebooting, verify the restored network, SSH and boot configuration. Use the provider console for the first boot.
 
 Tested on a few VMs.  Not tested on a physical server.  Use at your own risk.
 
