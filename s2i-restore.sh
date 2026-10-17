@@ -8,7 +8,7 @@ ip="$(ifconfig eth0 2>/dev/null| grep 'inet ' | sed 's/inet addr:/inet /' | awk 
 [ -z "$ip" ] && ip="$(ip --json route get 1 2>/dev/null | awk -vRS="," '/src/'|tr -d "\""|cut -d: -f2)"
 
 #change these to your IP.  old = original host's IP.  new = the IP on the server we are restoring to
-oldip="${oldip:-127.0.0.3}"
+oldip="${oldip-127.0.0.3}"
 newip="${newip:-$ip}"
 
 # gzip file we'll be restoring from
@@ -458,6 +458,7 @@ rsync --force --delete --archive --hard-links --xattrs --perms --executability -
 --exclude='/root/s2i*' \
 --exclude=/root/rsync* \
 --exclude=/root/.ssh/authorized_keys \
+--exclude='/etc/ssh/ssh_host_*' \
 --exclude=/etc/fstab \
 --exclude=/boot \
 --exclude=/proc \
