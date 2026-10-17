@@ -111,6 +111,16 @@ release, verify that the restored system can use the retained configuration befo
 Resolver symlinks remain symlinks; their target and resolver service must work after restoration.
 Review custom interface rules, hooks and network files outside the protected paths.
 
+Before restoring to `/`, a filesystem-only sanity check requires retained destination configuration
+for a backend present in the image: Debian ifupdown, Red Hat ifcfg scripts or NetworkManager's
+ifcfg plugin, Netplan with an available renderer, NetworkManager profiles, or systemd-networkd.
+It rejects empty/comment-only configuration, loopback-only setups and configuration found only
+inside the image. The check runs after verified extraction and before services stop or files copy.
+Offline `--restoretopath` destinations skip it. Use `--ignorenetwork` only after manually reviewing
+a custom setup. This check does not prove interface names, routes, service enablement or reachability;
+review those before rebooting. The helper `check_restore_network_compatibility IMAGE_ROOT TARGET_ROOT`
+can also check a mounted target using only files under the two supplied roots.
+
 Completed extractions are cached under `/root/s2i.restore-cache`, keyed by the archive's SHA-256 hash and whether metadata options were used.
 Each attempt hashes the selected archive. A new extraction is published for reuse only after tar succeeds and a second hash confirms that the archive did not change.
 The completion record sits outside the extracted filesystem and is not copied to the restore target.
@@ -131,6 +141,7 @@ The archive must be available on every attempt.
   [ --ignoreports ] lets the restore proceed even if ports are in use (a safety precaution)
   [ --ignorehostname ] lets the restore proceed even if the server hostname is not like backup.something (a safety precaution)
   [ --ignorespace ] lets the restore proceed even if the script reports there may be insufficient space (a safety precaution)
+  [ --ignorenetwork ] skips the live-root network compatibility check after manual review
   Will extract the tar.gz archivegz to the restoretopath (default /)
   Retains common destination network, resolver and cloud-init configuration; review compatibility before restoring a different distro.
 ```
