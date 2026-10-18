@@ -3,6 +3,8 @@
 # Copyright Rimuhosting.com
 # https://rimuhosting.com
 
+umask 077
+
 function usage {
   echo " 
   $0 Creates a mysql backup.  Optionally copy that to a backup host
@@ -87,6 +89,7 @@ parse "$@" || exit 1
 [ -e "$outputdir" ] && echo "--outputdir already exists" >&2 && exit 1
 
 mkdir -p "$outputdir" || exit 1
+chmod u=rwx,go= "$outputdir" || exit 1
 
 if command -v dpkg 2>/dev/null >/dev/null; then
   if ! dpkg -l | grep -qai mydumper; then 
@@ -101,7 +104,7 @@ fi
 
 [ ! -f .backup.private.key ] && ssh-keygen -f .backup.private.key -t rsa -C "backupkey" -N "" 
 if [ -n "$remotehost" ] && [ -n "$SSH_AUTH_SOCK" ]; then
-  [ -f .backup.private.key.pub ] && scp .backup.private.* "$remotehost:" && ssh "$remotehost" 'mkdir -p .ssh; [ ! -f .ssh/authorized_keys ] && touch .ssh/authorized_keys; ! grep --fixed-strings "$(cat .backup.private.key.pub)" .ssh/authorized_keys && cat .backup.private.key.pub >> .ssh/authorized_keys'
+  [ -f .backup.private.key.pub ] && scp .backup.private.key.pub "$remotehost:" && ssh "$remotehost" 'mkdir -p .ssh; [ ! -f .ssh/authorized_keys ] && touch .ssh/authorized_keys; ! grep --fixed-strings "$(cat .backup.private.key.pub)" .ssh/authorized_keys && cat .backup.private.key.pub >> .ssh/authorized_keys'
 fi
 
 ret=0

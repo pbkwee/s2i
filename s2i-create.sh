@@ -4,6 +4,8 @@
 # Copyright Rimuhosting.com
 # https://rimuhosting.com
 
+umask 077
+
 function usage {
   echo " 
   $0 Creates a backup of a Linux server.  It has options to let you download that via http (else you can scp it from the source).  It has options to encrypt the backup file (e.g. via openssl or zip).
@@ -217,13 +219,26 @@ outputpath="${outputpath:-$outputdir/$outputfile}"
 # create a backup directory
 mkdir -p "$(dirname "$outputpath")" || exit 1
 
+passwordfile="$(dirname "$outputpath")/.bupassword"
+instructionsfile="$(dirname "$outputpath")/.buinstructions"
+for file in "$passwordfile" "$instructionsfile"; do
+  if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then
+    echo "Refusing an unsafe backup metadata file: $file" >&2; exit 1
+  fi
+  touch "$file" && chmod u=rw,go= "$file" || exit 1
+done
+
 if [ -z "$password" ]; then
   # random password of letters and digits
-  [ ! -f "$(dirname "$outputpath")/.bupassword" ] && LC_ALL=C </dev/urandom tr -dc A-Z0-9 | head -c10 > "$(dirname "$outputpath")/.bupassword"
+  [ -s "$passwordfile" ] || LC_ALL=C </dev/urandom tr -dc A-Z0-9 | head -c10 > "$passwordfile"
 
-  password="$(cat "$(dirname "$outputpath")/.bupassword")" || exit 1
+  password="$(cat "$passwordfile")" || exit 1
 else 
-  echo "$password" > "$(dirname "$outputpath")/.bupassword" || exit 1
+  printf '%s\n' "$password" > "$passwordfile" || exit 1
+fi
+[ -n "$password" ] || { echo 'Unable to obtain a backup password.' >&2; exit 1; }
+if [ "$encrypt" = openssl ]; then
+  case "$password" in *$'\n'*|*$'\r'*) echo 'OpenSSL file passwords must be a single line.' >&2; exit 1;; esac
 fi
 
 #cd "$(dirname "$outputpath")"
@@ -286,7 +301,7 @@ ip="$(ifconfig eth0 2>/dev/null| grep 'inet ' | sed 's/inet addr:/inet /' | awk 
 [ -z "$ip" ] && ip="$(ip --json route get 1 2>/dev/null | awk -vRS="," '/src/'|tr -d "\""|cut -d: -f2)"
 [ -z "$ip" ] && echo "Could not determine IP address." >&2 && exit 1 
 
-echo "" | tee "$(dirname "$outputpath")/.buinstructions"
+echo "" | tee "$instructionsfile"
 {
 [ -z "$ishttp" ] && echo "HTTP URL: NA.  Not making backup http accessible"
 [ -n "$ishttp" ] && echo "HTTP URL: Will make backup http accessible"
@@ -296,15 +311,15 @@ echo "Output path: '$outputpath'"
 echo "Disk:"
 df -h "$root/"
 echo "Starting server-to-image at $dt"
-} | tee -a "$(dirname "$outputpath")/.buinstructions"
+} | tee -a "$instructionsfile"
 
 if [ -n "$issize" ]; then
-  echo "Checking the file size of the backup..." | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "Checking the file size of the backup..." | tee -a "$instructionsfile"
   bytes="$(
     set -o pipefail
     # GNU tar status 1 means changed files; retain the existing warning behavior.
     if [ "$encrypt" == "openssl" ]; then
-      { "$tarcmd" "${taropts[@]}" || [ "$?" -eq 1 ]; } | openssl enc -aes-256-cbc -md sha256 -pass "pass:$password" | wc -c
+      { "$tarcmd" "${taropts[@]}" || [ "$?" -eq 1 ]; } | openssl enc -aes-256-cbc -md sha256 -pass "file:$passwordfile" | wc -c
     elif [ "$encrypt" == "zip" ]; then
       { "$tarcmd" "${taropts[@]}" || [ "$?" -eq 1 ]; } | zip --encrypt --password "$password" | wc -c
     elif [ "$encrypt" == "none" ]; then
@@ -313,10 +328,13 @@ if [ -n "$issize" ]; then
       exit 1
     fi
   )" || { echo "Backup size calculation failed." >&2; exit 1; }
-  echo "The backup size is $bytes bytes $(command -v numfmt >/dev/null 2>&1 && numfmt --to=iec-i --suffix=B --padding=7 "$bytes")" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "The backup size is $bytes bytes $(command -v numfmt >/dev/null 2>&1 && numfmt --to=iec-i --suffix=B --padding=7 "$bytes")" | tee -a "$instructionsfile"
   exit 0
 fi
 ret=0
+if [ -L "$outputpath" ] || { [ -z "$ispipe" ] && [ -e "$outputpath" ] && [ ! -f "$outputpath" ]; }; then
+  echo "Refusing an unsafe backup output file: $outputpath" >&2; exit 1
+fi
 if [ -n "$ispipe" ]; then
   [ ! -p "$outputpath" ] && [ -e "$outputpath" ] && echo "'$outputpath' already exists and is not a pipe." >&2 && exit 1
   [ ! -p "$outputpath" ] && { mkfifo "$outputpath" || { echo "Failed creating pipe $outputpath" >&2 && exit 1 ; } }
@@ -325,22 +343,26 @@ if [ -n "$ispipe" ]; then
   echo "or:"
   echo "cat \"$outputpath\" | curl -vvv --config ~/.config/backup-curl.conf --fail -k  --show-error   --upload-file -   'sftp://targethost/backup.tar.gz'"
   echo "where   ~/.config/backup-curl.conf could have user = 'username:password'"
+else
+  : > "$outputpath" || exit 1
 fi
+chmod u=rw,go= "$outputpath" || exit 1
 if [ "$encrypt" == "openssl" ]; then
-  echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  "$tarcmd" "${taropts[@]}" | openssl enc -aes-256-cbc  -md sha256 -pass "pass:$password"  > "$outputpath"
+  echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$instructionsfile"
+  "$tarcmd" "${taropts[@]}" | openssl enc -aes-256-cbc  -md sha256 -pass "file:$passwordfile"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
   tarret="${RC[0]}"
   ret="${RC[1]}"
-  echo "OpenSSL command to decrypt the $outputpath backup file openssl enc -d -aes-256-cbc  -md sha256 -pass \"pass:$password\" -in $outputpath -out s2i.backup.tar.gz" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "Encryption password retained in $passwordfile; decryption will prompt for it." | tee -a "$instructionsfile"
+  echo "OpenSSL command to decrypt: openssl enc -d -aes-256-cbc -md sha256 -in \"$outputpath\" -out s2i.backup.tar.gz" | tee -a "$instructionsfile"
 elif [ "$encrypt" == "zip" ]; then
-  echo "Creating zip file, password encrypted (password is $password), at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "Creating zip file, password encrypted, at $outputpath. Password retained in $passwordfile." | tee -a "$instructionsfile"
   "$tarcmd" "${taropts[@]}" | zip --encrypt --password "$password"  > "$outputpath"
   RC=( "${PIPESTATUS[@]}" )
   tarret="${RC[0]}"
   ret="${RC[1]}"
 elif [ "$encrypt" == "none" ]; then
-  echo "Creating tar file, not encrypted, at $outputpath" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "Creating tar file, not encrypted, at $outputpath" | tee -a "$instructionsfile"
   "$tarcmd" "${taropts[@]}" > "$outputpath"
   tarret=$?
 else
@@ -354,43 +376,45 @@ if [ "$ret" -ne 0 ] || [ "$tarret" -gt 1 ]; then
 fi
 [ "$tarret" -eq 1 ] && echo "Backup created with tar warnings." >&2
 
-echo "Backup created: $(ls -lh "$outputpath")" | tee -a "$(dirname "$outputpath")/.buinstructions"
-# record the full path of the output
-echo "$outputpath" > "$(dirname "$outputpath")/.outputpath"
-
+echo "Backup created: $(ls -lh "$outputpath")" | tee -a "$instructionsfile"
 secretdirname="$(LC_ALL=C </dev/urandom tr -dc A-Z0-9 | head -c10)"
 if [ -n "$ishttp" ]; then
-  mkdir -p "$(dirname "$outputpath")/$secretdirname" || exit 1
-  mv "$outputpath" "$(dirname "$outputpath")/$secretdirname/" || exit 1
-  newoutputpath="$(dirname "$outputpath")/$secretdirname/$(basename "$outputpath")"
-  echo "Moving the output file from $outputpath file to $newoutputpath, to improve HTTP security" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  # Serve only a fresh archive directory, never the working directory or password files.
+  httpdir=$(mktemp -d "$(dirname "$outputpath")/http.XXXXXXXXXX") || exit 1
+  chmod u=rwx,go= "$httpdir" || exit 1
+  mkdir "$httpdir/$secretdirname" || exit 1
+  mv "$outputpath" "$httpdir/$secretdirname/" || exit 1
+  newoutputpath="$httpdir/$secretdirname/$(basename "$outputpath")"
+  echo "Moving the output file from $outputpath file to $newoutputpath, to improve HTTP security" | tee -a "$instructionsfile"
   outputpath="$newoutputpath"
   # offer the file for download.  Kill this process off after you have downloaded the file.  
   # PHP has a built in web server
   # at job to kill off process after 24h?
-  nohup php -S "$ip:32956" &
-  echo "Download your backup from http://$ip:32956/$secretdirname/$(basename "$outputpath")" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  nohup php -S "$ip:32956" -t "$httpdir" &
+  echo "Download your backup from http://$ip:32956/$secretdirname/$(basename "$outputpath")" | tee -a "$instructionsfile"
   phppid="$(netstat -ntpl  | grep 32956 | sed 's/.*LISTEN *//' | sed 's#/.*##')"
-  [ -n "$phppid" ] && echo "After you have downloaded the file, stop the temporary web server with: kill $phppid" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  [ -n "$phppid" ] && echo "After you have downloaded the file, stop the temporary web server with: kill $phppid" | tee -a "$instructionsfile"
 fi
 
+# Record the final path beside the password, outside any HTTP document root.
+printf '%s\n' "$outputpath" > "$(dirname "$passwordfile")/.outputpath" || exit 1
 
-echo "You can access your backup file via scp:" | tee -a "$(dirname "$outputpath")/.buinstructions"
+echo "You can access your backup file via scp:" | tee -a "$instructionsfile"
 if [ "$encrypt" != zip ]; then
   # The destination may have different tar support from the backup host.
   {
     echo "Run these commands in Bash on the destination:"
     declare -f select_tar
     echo 'select_tar || exit 1'
-  } | tee -a "$(dirname "$outputpath")/.buinstructions"
+  } | tee -a "$instructionsfile"
 fi
 if [ "$encrypt" == "openssl" ] ; then
-  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | openssl enc -d -aes-256-cbc  -md sha256 -pass \"pass:$password\" | \"\$tarcmd\" --extract --gunzip --numeric-owner --preserve-permissions \"\${tarmetadataopts[@]}\"" | tee -a "$(dirname "$outputpath")/.buinstructions"
-  echo "Should you need openssl for windows, you may download that.  For example from https://curl.se/windows/" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | openssl enc -d -aes-256-cbc -md sha256 | \"\$tarcmd\" --extract --gunzip --numeric-owner --preserve-permissions \"\${tarmetadataopts[@]}\"" | tee -a "$instructionsfile"
+  echo "Should you need openssl for windows, you may download that.  For example from https://curl.se/windows/" | tee -a "$instructionsfile"
 elif [ "$encrypt" == "none" ] ; then
-  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | \"\$tarcmd\" --extract --gunzip --numeric-owner --preserve-permissions \"\${tarmetadataopts[@]}\"" | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "mkdir s2i.restore.$dt && cd s2i.restore.$dt && scp root@$ip:$outputpath /dev/stdout | \"\$tarcmd\" --extract --gunzip --numeric-owner --preserve-permissions \"\${tarmetadataopts[@]}\"" | tee -a "$instructionsfile"
 elif [ "$encrypt" == "zip" ] ; then
-  echo "scp root@$ip:$outputpath ." | tee -a "$(dirname "$outputpath")/.buinstructions"
+  echo "scp root@$ip:$outputpath ." | tee -a "$instructionsfile"
 else
   echo "Unrecognized encrypt type of '$encrypt'" >&2
   exit 1 

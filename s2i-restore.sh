@@ -484,8 +484,8 @@ rsync --force --delete --archive --hard-links --xattrs --perms --executability -
   elif [ -z "$newip" ]; then
     echo "No newip provided, not searching and replacing for that."
   else
-    # find /etc/ -type f | xargs grep 206.123.106.136
-    #/etc/hosts:206.123.106.136 prod-u20.example.com
+    # find /etc/ -type f | xargs grep 203.0.113.10
+    #/etc/hosts:203.0.113.10 restored.example.com
     #/etc/apache2/sites-available/000-default.conf:NameVirtualHost 127.0.0.3:80
     #/etc/apache2/sites-available/000-default.conf:NameVirtualHost 127.0.0.3:443
     find "${restoretopath%/}/etc/" -type f ! -name hosts -print0 | (
