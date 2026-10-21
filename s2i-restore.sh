@@ -3,6 +3,77 @@
 # Copyright Rimuhosting.com
 # https://rimuhosting.com
 
+# Keep this scope identical in create and restore; archives record absent roots too.
+function system_recovery_set_scope() {
+  systemrecoverypaths=(etc usr bin sbin lib lib32 lib64 libx32 boot opt
+    var/lib/dpkg var/lib/apt var/lib/ucf
+    var/lib/systemd/deb-systemd-helper-enabled var/lib/systemd/deb-systemd-helper-masked var/lib/initramfs-tools
+    var/lib/grub var/lib/pam var/cache/debconf var/spool/cron
+    var/lib/rpm var/lib/yum var/lib/dnf var/lib/alternatives
+    var/lib/pkgtools var/lib/slackpkg
+    var/log/packages var/log/scripts var/log/removed_packages var/log/removed_scripts var/log/setup var/log/pkgtools
+    var/db/pkg var/lib/portage var/lib/apk)
+  systemrecoveryparents=(var var/lib var/lib/systemd var/cache var/spool var/log var/db)
+}
+
+function system_recovery_output_manifest() {
+  local tree=${1%/} require_package_database=${2:-true} path link database_found=false
+  if $require_package_database; then
+    # Read package records directly; do not run a package manager from the saved system.
+    for path in var/lib/dpkg/status var/lib/rpm/Packages var/lib/rpm/Packages.db var/lib/rpm/rpmdb.sqlite \
+        usr/lib/sysimage/rpm/Packages usr/lib/sysimage/rpm/Packages.db usr/lib/sysimage/rpm/rpmdb.sqlite \
+        lib/apk/db/installed usr/lib/apk/db/installed var/lib/apk/db/installed var/lib/apk/installed; do
+      case "$path" in
+        var/lib/rpm/*) [ ! -L "$tree/var/lib/rpm" ] || continue;;
+        lib/apk/*) [ ! -L "$tree/lib" ] || continue;;
+      esac
+      if [ -f "$tree/$path" ] && [ ! -L "$tree/$path" ]; then database_found=true; break; fi
+    done
+    for path in var/lib/pkgtools/packages var/log/packages var/db/pkg; do
+      if [ -d "$tree/$path" ] && [ ! -L "$tree/$path" ]; then database_found=true; break; fi
+    done
+    if ! $database_found || [ ! -d "$tree/usr" ] || [ ! -d "$tree/etc" ]; then
+      echo 'System scope requires /etc, /usr and a dpkg, RPM, pkgtools, Portage or APK package database.' >&2; return 1
+    fi
+  fi
+  for path in etc usr "${systemrecoveryparents[@]}"; do
+    [ ! -L "$tree/$path" ] || { echo "System recovery cannot follow a parent symlink: /$path" >&2; return 1; }
+  done
+  if [ -L "$tree/lib" ] && [ -L "$tree/lib64" ]; then
+    case "$(readlink -- "$tree/lib"):$(readlink -- "$tree/lib64")" in
+      lib64:lib|lib64:/lib|/lib64:lib|/lib64:/lib)
+        echo 'System recovery cannot save or replace a /lib and /lib64 link cycle.' >&2; return 1;;
+    esac
+  fi
+  printf '%s\n' s2i-system-recovery-v2
+  for path in "${systemrecoverypaths[@]}"; do
+    if [ -L "$tree/$path" ]; then
+      link=$(readlink -- "$tree/$path") || return 1
+      case "$path:$link" in
+        bin:usr/bin|bin:/usr/bin|sbin:usr/sbin|sbin:/usr/sbin|\
+        lib:usr/lib|lib:/usr/lib|lib:lib64|lib:/lib64|lib:usr/lib64|lib:/usr/lib64|\
+        lib32:usr/lib32|lib32:/usr/lib32|\
+        lib64:usr/lib64|lib64:/usr/lib64|lib64:lib|lib64:/lib|lib64:usr/lib|lib64:/usr/lib|\
+        libx32:usr/libx32|libx32:/usr/libx32|\
+        var/lib/rpm:../../usr/lib/sysimage/rpm|var/lib/rpm:/usr/lib/sysimage/rpm|\
+        var/log/packages:../lib/pkgtools/packages|var/log/packages:/var/lib/pkgtools/packages|\
+        var/log/scripts:../lib/pkgtools/scripts|var/log/scripts:/var/lib/pkgtools/scripts|\
+        var/log/removed_packages:pkgtools/removed_packages|var/log/removed_packages:../lib/pkgtools/removed_packages|var/log/removed_packages:/var/lib/pkgtools/removed_packages|\
+        var/log/removed_scripts:pkgtools/removed_scripts|var/log/removed_scripts:../lib/pkgtools/removed_scripts|var/log/removed_scripts:/var/lib/pkgtools/removed_scripts|\
+        var/log/setup:../lib/pkgtools/setup|var/log/setup:/var/lib/pkgtools/setup) ;;
+        *) echo "System recovery cannot save or replace this scope symlink: /$path" >&2; return 1;;
+      esac
+      printf 'link\t%s\t%s\n' "$path" "$link"
+    elif [ -d "$tree/$path" ]; then printf 'directory\t%s\n' "$path"
+    elif [ -e "$tree/$path" ]; then
+      echo "System recovery scope must be a directory or a supported system alias: /$path" >&2; return 1
+    else printf 'absent\t%s\n' "$path"; fi
+  done
+}
+
+systemrecovery=false
+scopeprovided=false
+
 ip="$(ifconfig eth0 2>/dev/null| grep 'inet ' | sed 's/inet addr:/inet /' | awk '{print $2}')"
 # The following works on recent distros with iproute installed.
 [ -z "$ip" ] && ip="$(ip --json route get 1 2>/dev/null | awk -vRS="," '/src/'|tr -d "\""|cut -d: -f2)"
@@ -54,6 +125,7 @@ done
 function usage() {
 echo "$0 usage:
   [ --oldip originalip ] [--newip newip/defaults to this server's IP ] set if you want to search/replace these IP values on the restored image
+  [ --scope full|system ] default full: normal whole-server restore; system: only complete system trees and package records
   [ --archivegz path ] defaults to the only and only big gz file in the current directory
   [ --restoretopath path ] defaults to the /
   [ --ignoreports ] lets the restore proceed even if ports are in use (a safety precaution)
@@ -61,7 +133,10 @@ echo "$0 usage:
   [ --ignorespace ] lets the restore proceed even if the script reports there may be insufficient space (a safety precaution)
   [ --ignorenetwork ] skips the live-root network compatibility check after manual review
   Will extract the tar.gz archivegz to the restoretopath (default /)
-  Retains common destination network, resolver and cloud-init configuration; review compatibility before restoring a different distro.
+  Normal whole-server mode retains common destination network, resolver and cloud-init configuration.
+  System recovery replaces complete saved system trees (including /etc and /boot), removes newer files there, and preserves omitted data such as /home.
+  Before a live recovery, stop unnecessary services and writers; keep SSH, networking and init running. Reboot only after success.
+  Database data and bootloader installation require separate recovery.
   "
 }
 function is_preserved_network_path() {
@@ -260,8 +335,22 @@ function info() {
 }
 
 function parse() {
+  local requested_system
   while [ -n "$1" ]; do
     case "$1" in
+      --scope)
+        shift
+        case "$1" in
+          full) requested_system=false;;
+          system) requested_system=true;;
+          *) echo 'Use --scope full (default) or --scope system.' >&2; return 1;;
+        esac
+        if $scopeprovided && [ "$systemrecovery" != "$requested_system" ]; then
+          echo 'Conflicting backup/restore scopes.' >&2; return 1
+        fi
+        systemrecovery=$requested_system
+        scopeprovided=true
+        ;;
       --oldip)
         shift
         if [ -z "$1" ]; then
@@ -327,6 +416,16 @@ function parse() {
 parse "$@" || exit 1
 
 restoretopath=$(realpath -m -- "$restoretopath") || exit 1
+if $systemrecovery; then
+  unset TAR_OPTIONS
+  if [ ! -d "$restoretopath" ]; then
+    echo "System recovery destination is not a directory: $restoretopath" >&2; exit 1
+  fi
+  if [ "$restoretopath" = / ]; then
+    echo 'LIVE system recovery: stop database, web, mail, worker and scheduled/package-update jobs first. Keep SSH, networking and init running.' >&2
+    echo 'Reboot after a successful restore. A failed restore needs repair or retry before rebooting.' >&2
+  fi
+fi
 
 [ -z "$archivegz" ] && echo "Use --archivegz file to specify the archive to use." >&2 && exit 1
 [ ! -f "$archivegz" ] && echo "--archivegz file $archivegz not found." >&2 && exit 1
@@ -437,7 +536,48 @@ while true; do
   # root@2023-05:~# rsync --exclude-from /asdf/asdf t t2
   # rsync: [client] failed to open exclude file /asdf/asdf: No such file or directory (2)
   restorescratchdir="$(realpath "$restorescratchdir")" || { ret=1; break; }
-  if [ "$restoretopath" = / ]; then
+  if [ -e "$restorescratchdir/.s2i-system-recovery" ] || [ -L "$restorescratchdir/.s2i-system-recovery" ]; then
+    $systemrecovery || { echo 'This archive requires --scope system.' >&2; ret=1; break; }
+    if [ ! -f "$restorescratchdir/.s2i-system-recovery" ] || [ -L "$restorescratchdir/.s2i-system-recovery" ]; then ret=1; break; fi
+    system_recovery_set_scope
+    systemmanifest=$(system_recovery_output_manifest "$restorescratchdir") || { ret=1; break; }
+    recordedmanifest=$(cat "$restorescratchdir/.s2i-system-recovery") || { ret=1; break; }
+    if [ "$systemmanifest" != "$recordedmanifest" ]; then
+      echo 'System recovery archive is incomplete or has an unsupported scope.' >&2; ret=1; break
+    fi
+  elif $systemrecovery; then
+    echo 'Archive has no system recovery manifest; refusing a scoped restore.' >&2; ret=1; break
+  fi
+  if $systemrecovery; then
+    # A damaged destination may need its missing package database restored.
+    system_recovery_output_manifest "$restoretopath" false >/dev/null || { ret=1; break; }
+    if [ "$restoretopath" != / ]; then
+      # realpath does not expose bind mounts of the running root or its system directories.
+      for path in '' "${systemrecoverypaths[@]}"; do
+        if [ ! -e "$restoretopath/$path" ] || [ -L "$restoretopath/$path" ] || [ ! -e "/$path" ]; then continue; fi
+        targetidentity=$(stat -Lc '%d:%i' -- "$restoretopath/$path") || { ret=1; break 2; }
+        liveidentity=$(stat -Lc '%d:%i' -- "/$path") || { ret=1; break 2; }
+        if [ "$targetidentity" = "$liveidentity" ]; then
+          echo "Offline system recovery target refers to the running system: /$path. Use / as the destination for a live restore." >&2
+          ret=1; break 2
+        fi
+      done
+    fi
+    # Include complete saved trees for deletion, but protect every omitted path.
+    restoreexcludeopts=(--checksum)
+    for path in "${systemrecoveryparents[@]}"; do restoreexcludeopts+=("--include=/$path/"); done
+    for path in "${systemrecoverypaths[@]}"; do
+      restoreexcludeopts+=("--include=/$path" "--include=/$path/***")
+    done
+    restoreexcludeopts+=(--exclude='*')
+  else
+    restoreexcludeopts=(--ignore-errors "--exclude=$restorecache/" "${networkexcludeopts[@]}"
+      '--exclude=/root/s2i*' '--exclude=/root/rsync*' --exclude=/root/.ssh/authorized_keys
+      '--exclude=/etc/ssh/ssh_host_*' --exclude=/etc/fstab --exclude=/boot
+      --exclude=/proc --exclude=/tmp --exclude=/mnt --exclude=/dev --exclude=/sys --exclude=/run --exclude=/media
+      '--exclude=/usr/src/linux-headers*' '--exclude=/home/*/.gvfs' '--exclude=/home/*/.cache' '--exclude=/home/*/.local/share/Trash')
+  fi
+  if [ "$restoretopath" = / ] && ! $systemrecovery; then
     if [ -z "$isignorenetwork" ]; then
       check_restore_network_compatibility "$restorescratchdir" "$restoretopath" || { ret=1; break; }
     fi
@@ -452,26 +592,8 @@ while true; do
    # --force-change for immutables, but does not work on some distros. e.g. 311/2014
    # --force = force deletion of dirs even if not empty
    # using realpath below since "rsync /root/s2i.restore /" creates /s2i.restore.  Rather we need "rsync /root/s2i.restore/ /" 
-rsync --force --delete --archive --hard-links --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids --ignore-errors \
---exclude="$restorecache/" \
-"${networkexcludeopts[@]}" \
---exclude='/root/s2i*' \
---exclude=/root/rsync* \
---exclude=/root/.ssh/authorized_keys \
---exclude='/etc/ssh/ssh_host_*' \
---exclude=/etc/fstab \
---exclude=/boot \
---exclude=/proc \
---exclude=/tmp \
---exclude=/mnt \
---exclude=/dev \
---exclude=/sys \
---exclude=/run \
---exclude=/media \
---exclude=/usr/src/linux-headers* \
---exclude=/home/*/.gvfs \
---exclude=/home/*/.cache \
---exclude=/home/*/.local/share/Trash \
+rsync --force --delete --archive --hard-links --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids \
+"${restoreexcludeopts[@]}" \
 "$restorescratchdir/" "${restoretopath:-/}" 2>&1 | tee -a rsync.log
   RC=( "${PIPESTATUS[@]}" )
   if [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ]; then
@@ -479,7 +601,9 @@ rsync --force --delete --archive --hard-links --xattrs --perms --executability -
     ret=1
     break
   fi
-  if [  -z "$oldip" ]; then 
+  if $systemrecovery; then
+    echo "System recovery copied complete system trees; omitted data was preserved. Verify boot and database compatibility before starting the restored system."
+  elif [  -z "$oldip" ]; then
     echo "No oldip provided, not searching and replacing for that."
   elif [ -z "$newip" ]; then
     echo "No newip provided, not searching and replacing for that."

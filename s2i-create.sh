@@ -6,11 +6,86 @@
 
 umask 077
 
+# Keep this scope identical in create and restore; archives record absent roots too.
+function system_recovery_set_scope() {
+  systemrecoverypaths=(etc usr bin sbin lib lib32 lib64 libx32 boot opt
+    var/lib/dpkg var/lib/apt var/lib/ucf
+    var/lib/systemd/deb-systemd-helper-enabled var/lib/systemd/deb-systemd-helper-masked var/lib/initramfs-tools
+    var/lib/grub var/lib/pam var/cache/debconf var/spool/cron
+    var/lib/rpm var/lib/yum var/lib/dnf var/lib/alternatives
+    var/lib/pkgtools var/lib/slackpkg
+    var/log/packages var/log/scripts var/log/removed_packages var/log/removed_scripts var/log/setup var/log/pkgtools
+    var/db/pkg var/lib/portage var/lib/apk)
+  systemrecoveryparents=(var var/lib var/lib/systemd var/cache var/spool var/log var/db)
+}
+
+function system_recovery_output_manifest() {
+  local tree=${1%/} require_package_database=${2:-true} path link database_found=false
+  if $require_package_database; then
+    # Read package records directly; do not run a package manager from the saved system.
+    for path in var/lib/dpkg/status var/lib/rpm/Packages var/lib/rpm/Packages.db var/lib/rpm/rpmdb.sqlite \
+        usr/lib/sysimage/rpm/Packages usr/lib/sysimage/rpm/Packages.db usr/lib/sysimage/rpm/rpmdb.sqlite \
+        lib/apk/db/installed usr/lib/apk/db/installed var/lib/apk/db/installed var/lib/apk/installed; do
+      case "$path" in
+        var/lib/rpm/*) [ ! -L "$tree/var/lib/rpm" ] || continue;;
+        lib/apk/*) [ ! -L "$tree/lib" ] || continue;;
+      esac
+      if [ -f "$tree/$path" ] && [ ! -L "$tree/$path" ]; then database_found=true; break; fi
+    done
+    for path in var/lib/pkgtools/packages var/log/packages var/db/pkg; do
+      if [ -d "$tree/$path" ] && [ ! -L "$tree/$path" ]; then database_found=true; break; fi
+    done
+    if ! $database_found || [ ! -d "$tree/usr" ] || [ ! -d "$tree/etc" ]; then
+      echo 'System scope requires /etc, /usr and a dpkg, RPM, pkgtools, Portage or APK package database.' >&2; return 1
+    fi
+  fi
+  for path in etc usr "${systemrecoveryparents[@]}"; do
+    [ ! -L "$tree/$path" ] || { echo "System recovery cannot follow a parent symlink: /$path" >&2; return 1; }
+  done
+  if [ -L "$tree/lib" ] && [ -L "$tree/lib64" ]; then
+    case "$(readlink -- "$tree/lib"):$(readlink -- "$tree/lib64")" in
+      lib64:lib|lib64:/lib|/lib64:lib|/lib64:/lib)
+        echo 'System recovery cannot save or replace a /lib and /lib64 link cycle.' >&2; return 1;;
+    esac
+  fi
+  printf '%s\n' s2i-system-recovery-v2
+  for path in "${systemrecoverypaths[@]}"; do
+    if [ -L "$tree/$path" ]; then
+      link=$(readlink -- "$tree/$path") || return 1
+      case "$path:$link" in
+        bin:usr/bin|bin:/usr/bin|sbin:usr/sbin|sbin:/usr/sbin|\
+        lib:usr/lib|lib:/usr/lib|lib:lib64|lib:/lib64|lib:usr/lib64|lib:/usr/lib64|\
+        lib32:usr/lib32|lib32:/usr/lib32|\
+        lib64:usr/lib64|lib64:/usr/lib64|lib64:lib|lib64:/lib|lib64:usr/lib|lib64:/usr/lib|\
+        libx32:usr/libx32|libx32:/usr/libx32|\
+        var/lib/rpm:../../usr/lib/sysimage/rpm|var/lib/rpm:/usr/lib/sysimage/rpm|\
+        var/log/packages:../lib/pkgtools/packages|var/log/packages:/var/lib/pkgtools/packages|\
+        var/log/scripts:../lib/pkgtools/scripts|var/log/scripts:/var/lib/pkgtools/scripts|\
+        var/log/removed_packages:pkgtools/removed_packages|var/log/removed_packages:../lib/pkgtools/removed_packages|var/log/removed_packages:/var/lib/pkgtools/removed_packages|\
+        var/log/removed_scripts:pkgtools/removed_scripts|var/log/removed_scripts:../lib/pkgtools/removed_scripts|var/log/removed_scripts:/var/lib/pkgtools/removed_scripts|\
+        var/log/setup:../lib/pkgtools/setup|var/log/setup:/var/lib/pkgtools/setup) ;;
+        *) echo "System recovery cannot save or replace this scope symlink: /$path" >&2; return 1;;
+      esac
+      printf 'link\t%s\t%s\n' "$path" "$link"
+    elif [ -d "$tree/$path" ]; then printf 'directory\t%s\n' "$path"
+    elif [ -e "$tree/$path" ]; then
+      echo "System recovery scope must be a directory or a supported system alias: /$path" >&2; return 1
+    else printf 'absent\t%s\n' "$path"; fi
+  done
+}
+
+
 function usage {
   echo " 
   $0 Creates a backup of a Linux server.  It has options to let you download that via http (else you can scp it from the source).  It has options to encrypt the backup file (e.g. via openssl or zip).
   
   Usage: $0 
+    --scope full|system (default full)
+      full: normal whole-server image with the standard exclusions.
+      system: complete programs, libraries, /etc, /boot, /opt and package records; omits home and application data under /var.
+      Use system before an upgrade. Restore with the same scope to remove newer system files while preserving omitted data.
+      Supports typical Debian/Ubuntu, RPM/Yum/DNF, Slackware, Gentoo and Alpine package paths.
+      System scope needs complete trees (no --files, custom exclusions or --pipe). Database data needs a separate backup.
     --files (default to / )
     --root (defaults to an empty value meaning /.  If you are mounting a root filesystem elsewhere, you can use something like --root /mnt.  --files and --root are mutually exclusive.)
 
@@ -80,14 +155,31 @@ dt="$(date +%Y-%m-%d-%s)"
 encrypt=""
 ishttp=""
 filestobackup=/
+filesprovided=false
+systemrecovery=false
+scopeprovided=false
 root=
 issize=""
 ispipe=""
 outputdir="${outputdir:-/root/s2i.backup}"
 
 function parse() {
+  local requested_system
   while [ -n "$1" ]; do
     case "$1" in
+      --scope)
+        shift
+        case "$1" in
+          full) requested_system=false;;
+          system) requested_system=true;;
+          *) echo 'Use --scope full (default) or --scope system.' >&2; return 1;;
+        esac
+        if $scopeprovided && [ "$systemrecovery" != "$requested_system" ]; then
+          echo 'Conflicting backup/restore scopes.' >&2; return 1
+        fi
+        systemrecovery=$requested_system
+        scopeprovided=true
+        ;;
       --encrypt)
         shift
         if [ -z "$1" ]; then
@@ -148,6 +240,7 @@ function parse() {
             return 1
           fi
           filestobackup="$1"
+          filesprovided=true
           [ -n "$root" ] && [ "$filestobackup" != "/" ] && echo "Set --root or --files but not both" >&2 && return 1
           for i in $filestobackup; do 
             [ ! -e "$i" ] && echo "No such file as $i" >&2 && return 1
@@ -185,11 +278,24 @@ function parse() {
 }
 
 parse "$@" || exit 1
+if $systemrecovery; then
+  unset TAR_OPTIONS
+  system_recovery_set_scope
+  if $filesprovided; then echo '--scope system cannot be combined with --files.' >&2; exit 1; fi
+  if [ -n "$ispipe" ]; then echo '--scope system requires a completed archive file; --pipe is not supported.' >&2; exit 1; fi
+  systemroot=$(cd -- "${root:-/}" && pwd -P) || exit 1
+  systemroot=${systemroot%/}
+  systemmanifest=$(system_recovery_output_manifest "$systemroot") || exit 1
+fi
 
 select_tar || exit 1
+if $systemrecovery && ! "$tarcmd" --no-recursion --recursion --version >/dev/null 2>&1; then
+  echo 'System scope requires GNU tar with --no-recursion and --recursion support.' >&2; exit 1
+fi
 
 # rsync typically needed on the restore side
 if ! command -v rsync 1>/dev/null 2>&1; then
+  if $systemrecovery; then echo 'Install rsync before creating a system recovery backup.' >&2; exit 1; fi
   command -v apt-get 1>/dev/null 2>&1 && apt-get -y install rsync
 fi
 
@@ -216,6 +322,15 @@ outputpath="${outputpath:-$outputdir/$outputfile}"
 
 [ -n "$issize" ] && [ -n "$ispipe" ] && echo "--pipe and --size options are mutually exclusive." >&2 && exit 1
  
+if $systemrecovery; then
+  recoveryoutput=$(readlink -m -- "$(dirname "$outputpath")") || exit 1
+  for path in "${systemrecoverypaths[@]}"; do
+    case "$recoveryoutput/" in "$systemroot/$path/"*)
+      echo "Put the recovery archive outside its saved system trees: /$path" >&2; exit 1;;
+    esac
+  done
+fi
+
 # create a backup directory
 mkdir -p "$(dirname "$outputpath")" || exit 1
 
@@ -227,6 +342,13 @@ for file in "$passwordfile" "$instructionsfile"; do
   fi
   touch "$file" && chmod u=rw,go= "$file" || exit 1
 done
+
+if $systemrecovery && [ -n "$password" ] && [ -s "$passwordfile" ]; then
+  recoverypassword=$(cat "$passwordfile") || exit 1
+  if [ "$password" != "$recoverypassword" ]; then
+    echo 'Use a new recovery output directory to change its encryption password.' >&2; exit 1
+  fi
+fi
 
 if [ -z "$password" ]; then
   # random password of letters and digits
@@ -243,6 +365,24 @@ fi
 
 #cd "$(dirname "$outputpath")"
 
+if $systemrecovery; then
+  if [ -s "$(dirname "$outputpath")/exclude.log" ]; then
+    echo 'System recovery requires complete system trees; custom exclude.log is not supported.' >&2; exit 1
+  fi
+  recoverymetadata=$(mktemp -d "$(dirname "$outputpath")/.system-recovery.XXXXXX") || exit 1
+  trap 'rm -rf -- "$recoverymetadata"; [ -z "${recoveryarchive:-}" ] || rm -f -- "$recoveryarchive"' EXIT
+  printf '%s\n' "$systemmanifest" > "$recoverymetadata/.s2i-system-recovery" || exit 1
+  taropts=(--numeric-owner --create --preserve-permissions "${tarmetadataopts[@]}" --gzip --file -
+    --directory "$recoverymetadata" .s2i-system-recovery --directory "${systemroot:-/}" --no-recursion .)
+  # Save parent metadata without copying omitted data or inheriting staging-directory permissions.
+  for path in "${systemrecoveryparents[@]}"; do
+    [ ! -d "$systemroot/$path" ] || taropts+=("$path")
+  done
+  taropts+=(--recursion)
+  for path in "${systemrecoverypaths[@]}"; do
+    if [ -e "$systemroot/$path" ] || [ -L "$systemroot/$path" ]; then taropts+=("$path"); fi
+  done
+else
 # exclude mysql and log files, but keep directory structure
 [ -d "$root/var/log" ] && find "$root/var/log" -type f | grep -E -v 'mysql|mariadb' > "$(dirname "$outputpath")/exclude-default.log"
 [ -d "$root/var/cache/apt/archives" ] && find  "$root/var/cache/apt/archives" -type f >> "$(dirname "$outputpath")/exclude-default.log"
@@ -296,6 +436,8 @@ taropts=(--numeric-owner --create --preserve-permissions
 "$root"/$filestobackup
 )
 
+fi
+
 ip="$(ifconfig eth0 2>/dev/null| grep 'inet ' | sed 's/inet addr:/inet /' | awk '{print $2}')"
 # The following works on recent distros with iproute installed.
 [ -z "$ip" ] && ip="$(ip --json route get 1 2>/dev/null | awk -vRS="," '/src/'|tr -d "\""|cut -d: -f2)"
@@ -317,13 +459,13 @@ if [ -n "$issize" ]; then
   echo "Checking the file size of the backup..." | tee -a "$instructionsfile"
   bytes="$(
     set -o pipefail
-    # GNU tar status 1 means changed files; retain the existing warning behavior.
+    # Full backups tolerate changed files; recovery images require a clean tar result.
     if [ "$encrypt" == "openssl" ]; then
-      { "$tarcmd" "${taropts[@]}" || [ "$?" -eq 1 ]; } | openssl enc -aes-256-cbc -md sha256 -pass "file:$passwordfile" | wc -c
+      { "$tarcmd" "${taropts[@]}" || { [ "$?" -eq 1 ] && ! $systemrecovery; }; } | openssl enc -aes-256-cbc -md sha256 -pass "file:$passwordfile" | wc -c
     elif [ "$encrypt" == "zip" ]; then
-      { "$tarcmd" "${taropts[@]}" || [ "$?" -eq 1 ]; } | zip --encrypt --password "$password" | wc -c
+      { "$tarcmd" "${taropts[@]}" || { [ "$?" -eq 1 ] && ! $systemrecovery; }; } | zip --encrypt --password "$password" | wc -c
     elif [ "$encrypt" == "none" ]; then
-      { "$tarcmd" "${taropts[@]}" || [ "$?" -eq 1 ]; } | wc -c
+      { "$tarcmd" "${taropts[@]}" || { [ "$?" -eq 1 ] && ! $systemrecovery; }; } | wc -c
     else
       exit 1
     fi
@@ -332,6 +474,7 @@ if [ -n "$issize" ]; then
   exit 0
 fi
 ret=0
+archiveoutputpath=$outputpath
 if [ -L "$outputpath" ] || { [ -z "$ispipe" ] && [ -e "$outputpath" ] && [ ! -f "$outputpath" ]; }; then
   echo "Refusing an unsafe backup output file: $outputpath" >&2; exit 1
 fi
@@ -343,13 +486,16 @@ if [ -n "$ispipe" ]; then
   echo "or:"
   echo "cat \"$outputpath\" | curl -vvv --config ~/.config/backup-curl.conf --fail -k  --show-error   --upload-file -   'sftp://targethost/backup.tar.gz'"
   echo "where   ~/.config/backup-curl.conf could have user = 'username:password'"
+elif $systemrecovery; then
+  recoveryarchive=$(mktemp "$(dirname "$outputpath")/.system-recovery-archive.XXXXXX") || exit 1
+  archiveoutputpath=$recoveryarchive
 else
   : > "$outputpath" || exit 1
 fi
-chmod u=rw,go= "$outputpath" || exit 1
+chmod u=rw,go= "$archiveoutputpath" || exit 1
 if [ "$encrypt" == "openssl" ]; then
   echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$instructionsfile"
-  "$tarcmd" "${taropts[@]}" | openssl enc -aes-256-cbc  -md sha256 -pass "file:$passwordfile"  > "$outputpath"
+  "$tarcmd" "${taropts[@]}" | openssl enc -aes-256-cbc  -md sha256 -pass "file:$passwordfile"  > "$archiveoutputpath"
   RC=( "${PIPESTATUS[@]}" )
   tarret="${RC[0]}"
   ret="${RC[1]}"
@@ -357,22 +503,26 @@ if [ "$encrypt" == "openssl" ]; then
   echo "OpenSSL command to decrypt: openssl enc -d -aes-256-cbc -md sha256 -in \"$outputpath\" -out s2i.backup.tar.gz" | tee -a "$instructionsfile"
 elif [ "$encrypt" == "zip" ]; then
   echo "Creating zip file, password encrypted, at $outputpath. Password retained in $passwordfile." | tee -a "$instructionsfile"
-  "$tarcmd" "${taropts[@]}" | zip --encrypt --password "$password"  > "$outputpath"
+  "$tarcmd" "${taropts[@]}" | zip --encrypt --password "$password"  > "$archiveoutputpath"
   RC=( "${PIPESTATUS[@]}" )
   tarret="${RC[0]}"
   ret="${RC[1]}"
 elif [ "$encrypt" == "none" ]; then
   echo "Creating tar file, not encrypted, at $outputpath" | tee -a "$instructionsfile"
-  "$tarcmd" "${taropts[@]}" > "$outputpath"
+  "$tarcmd" "${taropts[@]}" > "$archiveoutputpath"
   tarret=$?
 else
   echo "Unexpected encryption type '$encrypt'" >&2
   exit 1
 fi
-if [ "$ret" -ne 0 ] || [ "$tarret" -gt 1 ]; then
+if [ "$ret" -ne 0 ] || [ "$tarret" -gt 1 ] || { $systemrecovery && [ "$tarret" -ne 0 ]; }; then
   echo "Backup creation failed." >&2
   [ "$ret" -ne 0 ] && exit "$ret"
   exit "$tarret"
+fi
+if $systemrecovery; then
+  mv -f -- "$recoveryarchive" "$outputpath" || exit 1
+  recoveryarchive=
 fi
 [ "$tarret" -eq 1 ] && echo "Backup created with tar warnings." >&2
 
@@ -398,6 +548,11 @@ fi
 
 # Record the final path beside the password, outside any HTTP document root.
 printf '%s\n' "$outputpath" > "$(dirname "$passwordfile")/.outputpath" || exit 1
+
+if $systemrecovery; then
+  echo 'System recovery archive: use the current s2i-restore.sh --scope system (defaults to /; stop writers first). For an offline restore, add --restoretopath /mnt/vm.' | tee -a "$instructionsfile"
+  echo 'Do not use a whole-server restore for this archive. Database data and bootloader installation need separate recovery.' | tee -a "$instructionsfile"
+fi
 
 echo "You can access your backup file via scp:" | tee -a "$instructionsfile"
 if [ "$encrypt" != zip ]; then

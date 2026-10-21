@@ -10,6 +10,12 @@ s2i-create.sh creates the server image, supports encryption (openssl, none, or z
 
 s2i-restore.sh restores that backup over an existing server. It retains common destination network configurations by default. Review its exclusions for custom configurations and compatibility with the restored distribution.
 
+Use `--scope full` (the default) for a whole-server image with the normal exclusions.
+Before a system upgrade, use `--scope system` to save complete program and library trees, configuration, boot files and package records.
+Restore with `--scope system` to remove newer files in those trees while keeping omitted data, such as `/home`, websites and databases under `/var`.
+Typical Debian/Ubuntu, RPM/Yum/DNF, Slackware, Gentoo and Alpine package paths are covered.
+See [system recovery](docs/system-recovery.md) for saved paths, commands and limits.
+
 Should you need a location to store the backup you can setup an account at https://bakop.com/ which will provide a scp/sftp based storage location for the backup.  Which can be used later if you need to restore that image.
 
 # s2i-create.sh
@@ -21,6 +27,9 @@ Otherwise, the scripts continue without those options.
   s2i-create.sh Creates a backup of a Linux server.  It has options to let you download that via http (else you can scp it from the source).  It has options to encrypt the backup file (e.g. via openssl or zip).
   
   Usage: s2i-create.sh 
+    --scope full|system (default full)
+      full: normal whole-server image with the standard exclusions
+      system: complete programs, libraries, /etc, /boot, /opt and package records; omits home and application data under /var
     --files (default to / )
     --root (defaults to  meaning /.  If you are mounting a root filesystem elsewhere, you can use something like --root /mnt.  --files and --root are mutually exclusive.)
 
@@ -88,9 +97,10 @@ Restores an s2i-create.sh backup.
 s2i-restore.sh extracts the archive gz file (created by s2i-create.sh).  Then rsyncs that over top of the server on which you are running the restore.
 
 It can also replace the old IP address with the new IP address in the destination's `/etc` directory.
-Services on the running host are stopped only when restoring to `/`.
+For normal whole-server restores, selected services are stopped when restoring to `/`.
+System recovery requires the operator to stop unnecessary services first.
 
-The restore keeps the destination's existing network configuration and prevents the image
+The normal whole-server restore keeps the destination's existing network configuration and prevents the image
 from introducing files at the same protected paths. Those paths also stay unchanged during IP replacement.
 
 | Configuration | Protected paths |
@@ -136,6 +146,7 @@ The archive must be available on every attempt.
 ./s2i-restore.sh --help
 ./s2i-restore.sh usage:
   [ --oldip originalip ] [--newip newip/defaults to this server's IP ] set if you want to search/replace these IP values on the restored image
+  [ --scope full|system ] default full; system restores only saved system trees and package records
   [ --archivegz path ] defaults to the only and only big gz file in the current directory
   [ --restoretopath path ] defaults to the /
   [ --ignoreports ] lets the restore proceed even if ports are in use (a safety precaution)
