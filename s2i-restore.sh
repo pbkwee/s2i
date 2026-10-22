@@ -3,6 +3,8 @@
 # Copyright Rimuhosting.com
 # https://rimuhosting.com
 
+# Recover program trees and package-manager records together so package metadata
+# describes the binaries and libraries that will actually be restored.
 # Keep this scope identical in create and restore; archives record absent roots too.
 function system_recovery_set_scope() {
   systemrecoverypaths=(etc usr bin sbin lib lib32 lib64 libx32 boot opt
@@ -16,6 +18,8 @@ function system_recovery_set_scope() {
   systemrecoveryparents=(var var/lib var/lib/systemd var/cache var/spool var/log var/db)
 }
 
+# An absent root is intentional restore data: a later upgrade may have created it.
+# Record directory/link/absent states so rollback can also remove newly introduced trees.
 function system_recovery_output_manifest() {
   local tree=${1%/} require_package_database=${2:-true} path link database_found=false
   if $require_package_database; then
@@ -46,6 +50,9 @@ function system_recovery_output_manifest() {
     esac
   fi
   printf '%s\n' s2i-system-recovery-v2
+  # Merged-/usr systems use aliases such as /bin -> usr/bin. Preserve known system
+  # aliases without accepting arbitrary redirects outside the selected tree.
+  # Check -L first: -e follows links and misses a dangling alias.
   for path in "${systemrecoverypaths[@]}"; do
     if [ -L "$tree/$path" ]; then
       link=$(readlink -- "$tree/$path") || return 1
@@ -79,6 +86,8 @@ ip="$(ifconfig eth0 2>/dev/null| grep 'inet ' | sed 's/inet addr:/inet /' | awk 
 [ -z "$ip" ] && ip="$(ip --json route get 1 2>/dev/null | awk -vRS="," '/src/'|tr -d "\""|cut -d: -f2)"
 
 #change these to your IP.  old = original host's IP.  new = the IP on the server we are restoring to
+# Without a colon, ${oldip-default} preserves an empty value to disable replacement.
+# ${newip:-default} instead uses the default for both unset and empty values.
 oldip="${oldip-127.0.0.3}"
 newip="${newip:-$ip}"
 
@@ -139,6 +148,8 @@ echo "$0 usage:
   Database data and bootloader installation require separate recovery.
   "
 }
+# Leading / anchors rsync exclusions to the transfer root. The IP replacement
+# pass must interpret the same list against paths relative to the restore destination.
 function is_preserved_network_path() {
   local pattern parent name
   for pattern in "${networkpreservepaths[@]}"; do
@@ -176,6 +187,8 @@ function restore_network_configured() {
     case "$resolved" in "$root"/*) [ -f "$resolved" ] && [ -r "$resolved" ] && files+=("$resolved");; esac
   done
   [ "${#files[@]}" -gt 0 ] || return 1
+  # ifupdown activation and address declarations may live in different included
+  # files. Retain their lookup tables across files; other formats use separate profiles.
   awk -v format="$format" -v networkd="${networkd:-false}" -v manager="${manager:-false}" '
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
     function yes(s) { return s ~ /^(yes|true|1|on)$/ }
@@ -254,6 +267,8 @@ function restore_network_configured() {
   ' "${files[@]}"
 }
 
+# Match the destination's retained configuration to a network backend in the image.
+# Files can reveal an obvious mismatch, but cannot prove interface names or routes will work.
 # Filesystem-only sanity check, also usable for an independently mounted restore target.
 function check_restore_network_compatibility() {
   local image target path interfacesfile
@@ -307,6 +322,9 @@ function check_restore_network_compatibility() {
   echo "No compatible retained network configuration found for the image backends:${supported:- none recognized}. Configure destination networking for the image, or use --ignorenetwork after manual review." >&2
   return 1
 }
+# Access control lists (ACLs) grant permissions beyond ordinary mode bits. Extended
+# attributes can hold capabilities or security labels. Probe the metadata flags
+# because older tar implementations differ.
 function select_tar() {
   local candidate
   tarcmd=
@@ -470,6 +488,8 @@ while true; do
       ret=1
       break
     fi
+    # Keep descriptor 9 open for the entire restore. flock releases its lock when
+    # that descriptor closes, so a short-lived lock would not protect the later copy.
     exec 9>>"$cachelock" || { ret=1; break; }
     if ! flock --nonblock 9; then
       echo "Another restore is using $restorecache; retry after it finishes." >&2
@@ -477,8 +497,12 @@ while true; do
       break
     fi
   fi
+  # Cache by archive bytes and tar metadata support: the same archive can extract
+  # with different permissions metadata. The digest detects changes, not a trusted origin.
   # Hash stdin so unusual archive filenames cannot alter sha256sum's output format.
   archivesha=$(sha256sum < "$archivegz") || { ret=1; break; }
+  # sha256sum prints a digest and filename marker. %% removes the longest suffix
+  # matching space followed by anything, leaving the digest as the cache identifier.
   archivesha=${archivesha%% *}
   cacheentry="$restorecache/$archivesha-$tarprofile"
   if [ ! -L "$cacheentry" ] && [ -d "$cacheentry/tree" ] &&
@@ -519,6 +543,8 @@ while true; do
       ret=1
       break
     fi
+    # A source archive can change while tar reads it. Rehash before publishing the
+    # cache so a successful extraction cannot be reused under the wrong content digest.
     extractedsha=$(sha256sum < "$archivegz") || { ret=1; break; }
     if [ "${extractedsha%% *}" != "$archivesha" ]; then
       echo "Archive changed during extraction; the extraction will not be reused." >&2
@@ -540,6 +566,8 @@ while true; do
     $systemrecovery || { echo 'This archive requires --scope system.' >&2; ret=1; break; }
     if [ ! -f "$restorescratchdir/.s2i-system-recovery" ] || [ -L "$restorescratchdir/.s2i-system-recovery" ]; then ret=1; break; fi
     system_recovery_set_scope
+    # Recompute the fixed manifest from the extracted tree before trusting its records.
+    # The archive cannot choose an arbitrary deletion scope or omit required system trees.
     systemmanifest=$(system_recovery_output_manifest "$restorescratchdir") || { ret=1; break; }
     recordedmanifest=$(cat "$restorescratchdir/.s2i-system-recovery") || { ret=1; break; }
     if [ "$systemmanifest" != "$recordedmanifest" ]; then
@@ -563,7 +591,11 @@ while true; do
         fi
       done
     fi
+    # rsync uses the first matching filter. Include parents and selected trees before
+    # the final exclusion, so --delete cannot remove omitted customer data.
     # Include complete saved trees for deletion, but protect every omitted path.
+    # Rollback may replace files with identical size and timestamps. Compare contents
+    # instead of letting rsync's usual quick check retain a newer binary.
     restoreexcludeopts=(--checksum)
     for path in "${systemrecoveryparents[@]}"; do restoreexcludeopts+=("--include=/$path/"); done
     for path in "${systemrecoverypaths[@]}"; do
@@ -571,6 +603,8 @@ while true; do
     done
     restoreexcludeopts+=(--exclude='*')
   else
+    # A normal whole-server migration retains the destination's disk, SSH and network
+    # identity. System recovery instead restores the saved /etc and /boot trees.
     restoreexcludeopts=(--ignore-errors "--exclude=$restorecache/" "${networkexcludeopts[@]}"
       '--exclude=/root/s2i*' '--exclude=/root/rsync*' --exclude=/root/.ssh/authorized_keys
       '--exclude=/etc/ssh/ssh_host_*' --exclude=/etc/fstab --exclude=/boot
@@ -595,6 +629,7 @@ while true; do
 rsync --force --delete --archive --hard-links --xattrs --perms --executability --acls --owner --group --specials --times --numeric-ids \
 "${restoreexcludeopts[@]}" \
 "$restorescratchdir/" "${restoretopath:-/}" 2>&1 | tee -a rsync.log
+  # tee can succeed after rsync fails; retain both statuses before printing anything.
   RC=( "${PIPESTATUS[@]}" )
   if [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ]; then
     echo "Error or warning from rsync." >&2
@@ -612,6 +647,8 @@ rsync --force --delete --archive --hard-links --xattrs --perms --executability -
     #/etc/hosts:203.0.113.10 restored.example.com
     #/etc/apache2/sites-available/000-default.conf:NameVirtualHost 127.0.0.3:80
     #/etc/apache2/sites-available/000-default.conf:NameVirtualHost 127.0.0.3:443
+    # NUL-separated paths preserve whitespace and newlines in configuration filenames.
+    # grep -F treats IP address dots literally rather than as regular-expression wildcards.
     find "${restoretopath%/}/etc/" -type f ! -name hosts -print0 | (
       while IFS= read -r -d '' configfile; do
         # rsync exclusions alone do not protect retained files from this second pass.

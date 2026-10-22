@@ -3,6 +3,8 @@
 # Copyright Rimuhosting.com
 # https://rimuhosting.com
 
+# Dumps and grants can contain private data and password hashes. Keep generated
+# files private even when the invoking shell uses a more permissive umask.
 umask 077
 
 function usage {
@@ -45,6 +47,8 @@ function parse() {
           echo "Unable to get a list of the databases from mysql." >&2
           return 1
         }
+        # Match whole schema names so customer databases such as mysql_reporting stay
+        # in the backup. Account grants are saved separately when pt-show-grants is available.
         databases="$(printf '%s\n' "$databaseoutput" | grep -E -v '^(Database|mysql|information_schema|performance_schema)$')"
         [ -z "$databases" ] && echo "Unable to get a list of the databases.  If a password is necessary you may put it in a file .mysqlp " >&2 && return 1
         ;;
@@ -102,6 +106,7 @@ if command -v dpkg 2>/dev/null >/dev/null; then
   fi
 fi
 
+# Only the public key is copied into remote authorized_keys; the private key stays local.
 [ ! -f .backup.private.key ] && ssh-keygen -f .backup.private.key -t rsa -C "backupkey" -N "" 
 if [ -n "$remotehost" ] && [ -n "$SSH_AUTH_SOCK" ]; then
   [ -f .backup.private.key.pub ] && scp .backup.private.key.pub "$remotehost:" && ssh "$remotehost" 'mkdir -p .ssh; [ ! -f .ssh/authorized_keys ] && touch .ssh/authorized_keys; ! grep --fixed-strings "$(cat .backup.private.key.pub)" .ssh/authorized_keys && cat .backup.private.key.pub >> .ssh/authorized_keys'
@@ -121,6 +126,8 @@ if [ -n "$databases" ]; then
   echo "Backing up databases: $databases to $outputdir"
   [ ! -f .mysqlp ] && echo "No .mysqlp file, not setting a password parameter."
   [ -f .mysqlp ] && echo "Using the contents of .mysqlp file for the mysql password."
+  # These clients use different password option syntax. Arrays keep a password with
+  # whitespace or shell metacharacters together as one argument.
   mysqlargs=()
   mysqldumpargs=()
   grantsargs=()
@@ -130,6 +137,8 @@ if [ -n "$databases" ]; then
     mysqldumpargs=("--password=$mysqlpassword")
     grantsargs=("-p$mysqlpassword")
   fi
+  # Application database dumps do not recreate MySQL users and grants. Save access
+  # permissions separately so the intended accounts can use the restored databases.
   if command -v pt-show-grants 2>/dev/null >/dev/null ; then
     echo "Saving database grants/permissions to $outputdir/grants.sql"  
     pt-show-grants "${grantsargs[@]}" > "$outputdir/grants.sql" || ret=1
@@ -140,6 +149,8 @@ if [ -n "$databases" ]; then
     if [ -z "$MYSQLDUMP" ] ; then
       mydumper "${mysqlargs[@]}" --outputdir "$outputdir" --compress --routines --triggers --events --complete-insert --tz-utc --database "$db" || ret=1
     else 
+      # gzip can successfully compress an incomplete SQL dump. Check both pipeline
+      # stages before allowing the result to be copied to the backup host.
       mysqldump "${mysqldumpargs[@]}" --routines --triggers --events --complete-insert --tz-utc "$db" | gzip > "$outputdir"/"${db}".sql.gz
       RC=( "${PIPESTATUS[@]}" )
       if [ "${RC[0]}" -ne 0 ] || [ "${RC[1]}" -ne 0 ]; then
@@ -161,7 +172,10 @@ if [ -n "$remotehost" ]; then
   SSHAGENTARGS="-s"
   if [ -z "$SSH_AUTH_SOCK" ] && [ -x "$SSHAGENT" ]; then
     echo "Creating an agent..."
+    # ssh-agent -s prints shell assignments and exports. Evaluate the local tool
+    # output to configure this shell; the exit trap owns only the agent started here.
     eval "$("$SSHAGENT" "$SSHAGENTARGS")"
+    # Expand the PID when installing the trap, so cleanup cannot select a later agent.
     # Capture the PID of the agent this script started.
     # shellcheck disable=SC2064
     trap "kill $SSH_AGENT_PID && echo killing agent $SSH_AGENT_PID" 0

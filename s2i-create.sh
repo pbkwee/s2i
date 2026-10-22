@@ -6,6 +6,8 @@
 
 umask 077
 
+# Recover program trees and package-manager records together so package metadata
+# describes the binaries and libraries that will actually be restored.
 # Keep this scope identical in create and restore; archives record absent roots too.
 function system_recovery_set_scope() {
   systemrecoverypaths=(etc usr bin sbin lib lib32 lib64 libx32 boot opt
@@ -19,6 +21,8 @@ function system_recovery_set_scope() {
   systemrecoveryparents=(var var/lib var/lib/systemd var/cache var/spool var/log var/db)
 }
 
+# An absent root is intentional restore data: a later upgrade may have created it.
+# Record directory/link/absent states so rollback can also remove newly introduced trees.
 function system_recovery_output_manifest() {
   local tree=${1%/} require_package_database=${2:-true} path link database_found=false
   if $require_package_database; then
@@ -49,6 +53,9 @@ function system_recovery_output_manifest() {
     esac
   fi
   printf '%s\n' s2i-system-recovery-v2
+  # Merged-/usr systems use aliases such as /bin -> usr/bin. Preserve known system
+  # aliases without accepting arbitrary redirects outside the selected tree.
+  # Check -L first: -e follows links and misses a dangling alias.
   for path in "${systemrecoverypaths[@]}"; do
     if [ -L "$tree/$path" ]; then
       link=$(readlink -- "$tree/$path") || return 1
@@ -130,6 +137,9 @@ function usage {
   return 0
 }
 
+# Access control lists (ACLs) grant permissions beyond ordinary mode bits. Extended
+# attributes can hold capabilities or security labels. Probe the metadata flags
+# because older tar implementations differ.
 function select_tar() {
   local candidate
   tarcmd=
@@ -278,6 +288,8 @@ function parse() {
 }
 
 parse "$@" || exit 1
+# TAR_OPTIONS can inject inherited exclusions. Recovery needs the complete fixed
+# scope regardless of the invoking shell's usual tar settings.
 if $systemrecovery; then
   unset TAR_OPTIONS
   system_recovery_set_scope
@@ -322,6 +334,8 @@ outputpath="${outputpath:-$outputdir/$outputfile}"
 
 [ -n "$issize" ] && [ -n "$ispipe" ] && echo "--pipe and --size options are mutually exclusive." >&2 && exit 1
  
+# Resolve output-directory aliases before checking scope. An archive inside its
+# own source tree can grow while tar reads it.
 if $systemrecovery; then
   recoveryoutput=$(readlink -m -- "$(dirname "$outputpath")") || exit 1
   for path in "${systemrecoverypaths[@]}"; do
@@ -343,6 +357,8 @@ for file in "$passwordfile" "$instructionsfile"; do
   touch "$file" && chmod u=rw,go= "$file" || exit 1
 done
 
+# Recovery archives in this directory share a saved password. Replacing that file
+# would lose the retained password for older encrypted archives.
 if $systemrecovery && [ -n "$password" ] && [ -s "$passwordfile" ]; then
   recoverypassword=$(cat "$passwordfile") || exit 1
   if [ "$password" != "$recoverypassword" ]; then
@@ -372,6 +388,8 @@ if $systemrecovery; then
   recoverymetadata=$(mktemp -d "$(dirname "$outputpath")/.system-recovery.XXXXXX") || exit 1
   trap 'rm -rf -- "$recoverymetadata"; [ -z "${recoveryarchive:-}" ] || rm -f -- "$recoveryarchive"' EXIT
   printf '%s\n' "$systemmanifest" > "$recoverymetadata/.s2i-system-recovery" || exit 1
+  # Switch tar's working directory after adding the manifest, so it sits at archive
+  # root. --no-recursion saves parent metadata without their omitted application data.
   taropts=(--numeric-owner --create --preserve-permissions "${tarmetadataopts[@]}" --gzip --file -
     --directory "$recoverymetadata" .s2i-system-recovery --directory "${systemroot:-/}" --no-recursion .)
   # Save parent metadata without copying omitted data or inheriting staging-directory permissions.
@@ -457,6 +475,8 @@ echo "Starting server-to-image at $dt"
 
 if [ -n "$issize" ]; then
   echo "Checking the file size of the backup..." | tee -a "$instructionsfile"
+  # Measure the produced stream, including compression/encryption overhead. Local
+  # pipefail prevents a successful wc from hiding a failed archive or encryption stage.
   bytes="$(
     set -o pipefail
     # Full backups tolerate changed files; recovery images require a clean tar result.
@@ -478,6 +498,8 @@ archiveoutputpath=$outputpath
 if [ -L "$outputpath" ] || { [ -z "$ispipe" ] && [ -e "$outputpath" ] && [ ! -f "$outputpath" ]; }; then
   echo "Refusing an unsafe backup output file: $outputpath" >&2; exit 1
 fi
+# A FIFO is a named pipe: writing waits for a reader and streams bytes directly.
+# It does not retain a completed archive for a later download.
 if [ -n "$ispipe" ]; then
   [ ! -p "$outputpath" ] && [ -e "$outputpath" ] && echo "'$outputpath' already exists and is not a pipe." >&2 && exit 1
   [ ! -p "$outputpath" ] && { mkfifo "$outputpath" || { echo "Failed creating pipe $outputpath" >&2 && exit 1 ; } }
@@ -493,6 +515,8 @@ else
   : > "$outputpath" || exit 1
 fi
 chmod u=rw,go= "$archiveoutputpath" || exit 1
+# Each pipeline saves PIPESTATUS immediately because the next command replaces it.
+# Archive creation and encryption can fail independently even when an output file exists.
 if [ "$encrypt" == "openssl" ]; then
   echo "Creating tar file, openssl encrypted, at $outputpath" | tee -a "$instructionsfile"
   "$tarcmd" "${taropts[@]}" | openssl enc -aes-256-cbc  -md sha256 -pass "file:$passwordfile"  > "$archiveoutputpath"
@@ -520,6 +544,8 @@ if [ "$ret" -ne 0 ] || [ "$tarret" -gt 1 ] || { $systemrecovery && [ "$tarret" -
   [ "$ret" -ne 0 ] && exit "$ret"
   exit "$tarret"
 fi
+# Publish only the completed recovery stream. On failure, the prior archive stays
+# at its advertised path and the EXIT trap removes only the unpublished temporary file.
 if $systemrecovery; then
   mv -f -- "$recoveryarchive" "$outputpath" || exit 1
   recoveryarchive=
